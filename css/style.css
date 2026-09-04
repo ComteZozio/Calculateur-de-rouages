@@ -1,0 +1,615 @@
+/* ------------------------------------------------------------------ */
+/* Tokens                                                              */
+/* ------------------------------------------------------------------ */
+:root {
+  --paper: #ede9df;
+  --paper-panel: #f5f2ea;
+  --ink: #21252b;
+  --ink-soft: #565248;
+  --rule: #c8c2b4;
+  --steel: #2b4c6f;
+  --steel-dark: #1c3348;
+  --brass: #b4884b;
+  --alert: #9c3b34;
+  --ok: #4c6f4a;
+
+  --font-display: "Space Grotesk", sans-serif;
+  --font-body: "IBM Plex Sans", sans-serif;
+  --font-mono: "IBM Plex Mono", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* ------------------------------------------------------------------ */
+/* Header                                                              */
+/* ------------------------------------------------------------------ */
+header.app-header {
+  padding: 1.5rem 2rem 1.1rem;
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+header.app-header h1 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 1.5rem;
+  letter-spacing: 0.01em;
+  margin: 0;
+  color: var(--steel-dark);
+}
+
+header.app-header .eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--brass);
+  border: 1px solid var(--brass);
+  padding: 0.15rem 0.5rem;
+  border-radius: 2px;
+}
+
+header.app-header p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+}
+
+/* ------------------------------------------------------------------ */
+/* Layout                                                              */
+/* ------------------------------------------------------------------ */
+main.app-layout {
+  display: grid;
+  grid-template-columns: 420px 1fr;
+  gap: 1.5rem;
+  padding: 1.5rem 2rem 3rem;
+  align-items: start;
+}
+
+@media (max-width: 880px) {
+  main.app-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Sans min-width:0, un grid item garde min-width:auto et deborde de sa
+   piste des que son contenu intrinseque est plus large (ici le tableau
+   de resultats, en white-space:nowrap) : la colonne passait alors sous
+   le panneau de dessin. Contraindre les deux colonnes laisse enfin
+   .table-scroll faire son overflow-x. */
+.control-column,
+.canvas-panel {
+  min-width: 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Cards / panels                                                      */
+/* ------------------------------------------------------------------ */
+.panel {
+  background: var(--paper-panel);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 1.1rem 1.2rem 1.3rem;
+  margin-bottom: 1.5rem;
+}
+
+.panel h2 {
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin: 0 0 0.9rem;
+  color: var(--steel-dark);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.panel h2::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  background: var(--brass);
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.7rem;
+  margin-bottom: 0.7rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.field.full {
+  grid-column: 1 / -1;
+}
+
+.field label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-soft);
+}
+
+.field input,
+.field select {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: #fff;
+  color: var(--ink);
+}
+
+.field input:focus,
+.field select:focus {
+  outline: 2px solid var(--steel);
+  outline-offset: 1px;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.6rem 0 0.9rem;
+}
+
+.checkbox-row label {
+  font-size: 0.82rem;
+  color: var(--ink);
+}
+
+button {
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border: none;
+  border-radius: 2px;
+  padding: 0.55rem 1rem;
+  cursor: pointer;
+  background: var(--steel);
+  color: #fff;
+  transition: background 0.15s ease;
+  width: 100%;
+}
+
+button:hover {
+  background: var(--steel-dark);
+}
+
+button:focus-visible {
+  outline: 2px solid var(--brass);
+  outline-offset: 2px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Results table (ratio candidates)                                    */
+/* ------------------------------------------------------------------ */
+table.candidates {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.9rem;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+table.candidates th {
+  text-align: left;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-soft);
+  border-bottom: 1px solid var(--rule);
+  padding: 0.3rem 0.4rem;
+}
+
+table.candidates td {
+  padding: 0.35rem 0.4rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+table.candidates tr.candidate-row {
+  cursor: pointer;
+}
+
+table.candidates tr.candidate-row:hover td {
+  background: #fff;
+}
+
+table.candidates tr.candidate-row.selected td {
+  background: var(--steel);
+  color: #fff;
+}
+
+.empty-note {
+  color: var(--ink-soft);
+  font-size: 0.8rem;
+  font-style: italic;
+  margin-top: 0.6rem;
+}
+
+/* ------------------------------------------------------------------ */
+/* Canvas / drawing area                                               */
+/* ------------------------------------------------------------------ */
+.canvas-panel {
+  background: var(--paper-panel);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 1rem;
+}
+
+.canvas-status {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 0.8rem;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.canvas-status .status-text {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+.canvas-status .status-text.ok {
+  color: var(--ok);
+}
+
+.canvas-status .status-text.error {
+  color: var(--alert);
+}
+
+.legend {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+}
+
+.legend .swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 0.35rem;
+  vertical-align: middle;
+}
+
+.ruled-frame {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  background: #fdfcf8;
+  border: 1px solid var(--rule);
+  overflow: auto;
+  max-width: 100%;
+}
+
+.ruled-frame .corner {
+  background: var(--paper-panel);
+}
+
+.ruled-frame .ruler-top,
+.ruled-frame .ruler-left {
+  background: var(--paper-panel);
+}
+
+.ruled-frame .drawing-area {
+  background: #fdfcf8;
+  background-image: linear-gradient(var(--rule) 0.5px, transparent 0.5px),
+    linear-gradient(90deg, var(--rule) 0.5px, transparent 0.5px);
+  background-size: 20px 20px;
+  opacity: 1;
+}
+
+.drawing-area svg {
+  display: block;
+}
+
+footer.app-footer {
+  padding: 1rem 2rem 2rem;
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  border-top: 1px solid var(--rule);
+}
+
+footer.app-footer code {
+  font-family: var(--font-mono);
+  background: var(--paper-panel);
+  padding: 0.1rem 0.3rem;
+  border-radius: 2px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Complications                                                       */
+/* ------------------------------------------------------------------ */
+.panel.complication {
+  margin-bottom: 1rem;
+}
+
+.panel h2.comp-title {
+  justify-content: space-between;
+}
+
+.comp-actions {
+  display: inline-flex;
+  gap: 0.6rem;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+button.link-btn {
+  width: auto;
+  padding: 0;
+  background: none;
+  color: var(--ink-soft);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 400;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+button.link-btn:hover {
+  background: none;
+  color: var(--alert);
+}
+
+button.link-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+  text-decoration: none;
+}
+
+button.secondary {
+  background: transparent;
+  color: var(--steel);
+  border: 1px dashed var(--steel);
+  margin-bottom: 0.4rem;
+}
+
+button.secondary:hover {
+  background: #fff;
+}
+
+table.candidates.compact td,
+table.candidates.compact th {
+  padding: 0.25rem 0.3rem;
+}
+
+table.candidates td.center {
+  text-align: center;
+}
+
+table.candidates input[type="number"] {
+  width: 4.2em;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  padding: 0.2rem 0.3rem;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: #fff;
+}
+
+table.candidates select {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  padding: 0.2rem 0.3rem;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: #fff;
+}
+
+.tag-auto {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0 0.35rem;
+  border-radius: 2px;
+  background: var(--brass);
+  color: #fff;
+  font-size: 0.65rem;
+  letter-spacing: 0.04em;
+  vertical-align: middle;
+}
+
+.empty-note.alert {
+  color: var(--alert);
+}
+
+.legend strong {
+  color: var(--ink);
+}
+
+.tag-auto[hidden] {
+  display: none;
+}
+
+.table-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.table-scroll table.candidates {
+  min-width: 100%;
+  white-space: nowrap;
+}
+
+.fixed-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.2rem 0.6rem;
+  align-items: center;
+  margin: 0.7rem 0 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+}
+
+.fixed-row .fixed-title {
+  grid-column: 1 / -1;
+  font-family: var(--font-body);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.fixed-row .fixed-value {
+  color: var(--alert);
+}
+
+.fixed-row button.link-btn {
+  margin-left: 0.4rem;
+}
+
+button.link-btn.active {
+  color: var(--alert);
+  font-weight: 600;
+}
+
+.comp-actions label {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: var(--ink-soft);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.drawing-area.placing {
+  cursor: crosshair;
+}
+
+.drawing-area.placing svg {
+  outline: 2px dashed var(--alert);
+  outline-offset: -2px;
+}
+
+#placing-hint {
+  color: var(--alert);
+  margin: 0 0 0.5rem;
+}
+
+.panel h2.comp-title > span:first-child {
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------ */
+/* Cible : vitesses et bibliotheque                                    */
+/* ------------------------------------------------------------------ */
+.speed-input {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.speed-input input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.speed-input select {
+  flex: 0 0 auto;
+  width: auto;
+}
+
+.preset-note {
+  margin-top: -0.4rem;
+  font-style: italic;
+}
+
+.ratio-readout {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  margin-top: -0.3rem;
+}
+
+span.alert {
+  color: var(--alert);
+}
+
+/* ------------------------------------------------------------------ */
+/* Zoom et deplacement du dessin                                       */
+/* ------------------------------------------------------------------ */
+.canvas-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+}
+
+.canvas-tools .zoom-value {
+  min-width: 5.5rem;
+  text-align: center;
+}
+
+.canvas-tools .canvas-hint {
+  margin-left: auto;
+  opacity: 0.75;
+}
+
+/* Hauteur bornee : sans elle le cadre grandit avec son contenu et le
+   deplacement vertical n'aurait aucun sens (rien ne depasserait jamais). */
+.ruled-frame {
+  max-height: 78vh;
+  cursor: grab;
+}
+
+.ruled-frame.panning {
+  cursor: grabbing;
+}
+
+.drawing-area.placing,
+.drawing-area.placing svg {
+  cursor: crosshair;
+}
+
+.canvas-tools .tool-sep {
+  width: 1px;
+  height: 1em;
+  background: var(--rule);
+}
+
+.canvas-tools #anim-speed {
+  width: 4.2rem;
+  padding: 0.15rem 0.3rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: #fdfcf8;
+  color: var(--ink);
+}
+
+.canvas-tools .anim-scale {
+  min-width: 8rem;
+  color: var(--ink-soft);
+}
