@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Atelier de rouages — complications et placement compact</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<header class="app-header">
+  <h1>Atelier de rouages</h1>
+  <span class="eyebrow">Placement compact</span>
+  <p>Recherche de ratio, sens de rotation et disposition géométrique de plusieurs complications sur une même platine.</p>
+</header>
+
+<main class="app-layout">
+
+  <!-- Colonne de contrôle -->
+  <div class="control-column">
+
+    <div id="complications"></div>
+    <button id="btn-add-complication" type="button" class="secondary">+ Ajouter une complication</button>
+    <p class="empty-note">
+      Chaque complication est un groupe de rouages réalisant son propre ratio
+      entre une roue d'entrée et une roue de sortie. Une complication peut
+      être indépendante (elle ne partage que la platine), avoir son entrée
+      montée sur l'arbre d'une roue d'une complication précédente
+      (<em>coaxiale</em>), ou engrenée sur celle-ci (le ratio est alors mesuré
+      depuis cette roue motrice). Les roues de renvoi n'agissent pas sur le
+      ratio : elles inversent le sens et écartent les mobiles.
+    </p>
+
+    <section class="panel" id="panel-conflicts" hidden>
+      <h2>Conflits géométriques fixes</h2>
+      <p class="empty-note">
+        Ces situations ne dépendent ni de l'angle choisi ni de la répartition
+        des niveaux : il faut changer de dents, de module, ajouter un niveau
+        ou un renvoi, ou lever une protection de centre.
+      </p>
+      <div id="conflicts-list"></div>
+    </section>
+
+    <section class="panel" id="panel-placement">
+      <h2>Placement géométrique</h2>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="module-min">Module min (mm)</label>
+          <input type="number" id="module-min" step="0.01" value="0.1" min="0.01" />
+        </div>
+        <div class="field">
+          <label for="module-max">Module max (mm)</label>
+          <input type="number" id="module-max" step="0.01" value="0.3" min="0.01" />
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="plate-diameter">Diamètre platine (mm)</label>
+          <input type="number" id="plate-diameter" step="0.5" value="30" min="1" />
+        </div>
+        <div class="field">
+          <label for="levels">Niveaux (hauteurs)</label>
+          <input type="number" id="levels" value="2" min="1" max="10" />
+        </div>
+      </div>
+
+      <p class="empty-note">
+        Les mobiles sont répartis sur plusieurs niveaux le long des arbres :
+        deux roues qui engrènent sont au même niveau, deux roues d'un même
+        arbre à des niveaux différents, et deux roues de niveaux différents
+        peuvent se recouvrir en projection sans se toucher. Moins de niveaux
+        = mouvement plus plat ; la répartition est choisie automatiquement
+        et indiquée sur le dessin (N1, N2…).
+      </p>
+
+      <p class="empty-note">
+        Deux roues qui engrènent partagent toujours le même module, mais il
+        peut varier d'un étage à l'autre — le couple augmentant quand la
+        vitesse diminue, le module est recherché de façon monotone entre
+        l'entrée et la sortie (plus grand côté couple élevé, plus petit côté
+        vitesse élevée).
+      </p>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="angle-step">Pas angulaire (°)</label>
+          <input type="number" id="angle-step" value="5" min="1" max="45" />
+        </div>
+        <div class="field">
+          <label for="restarts">Redémarrages</label>
+          <input type="number" id="restarts" value="300" min="1" max="5000" />
+        </div>
+      </div>
+
+      <table class="candidates" id="protected-table">
+        <thead>
+          <tr><th>Mobile</th><th>Centre toujours dégagé</th></tr>
+        </thead>
+        <tbody id="protected-body"></tbody>
+      </table>
+      <p class="empty-note">
+        Une roue cochée ne peut jamais avoir son centre recouvert par une
+        autre, même à un autre niveau (il faudrait un pont à cet endroit) —
+        la sortie de chaque complication est cochée par défaut, mais tu peux
+        protéger n'importe quel autre mobile, ou plusieurs.
+      </p>
+
+      <button id="btn-place" type="button">Placer</button>
+    </section>
+
+  </div>
+
+  <!-- Zone de dessin -->
+  <div class="canvas-panel">
+    <div class="canvas-status">
+      <span class="status-text" id="status-text">—</span>
+      <div class="legend" id="legend"></div>
+    </div>
+    <div class="legend" id="sens-info" style="margin-bottom:0.5rem"></div>
+    <div class="legend" id="modules-info" style="margin-bottom:0.8rem"></div>
+
+    <p class="empty-note" id="placing-hint" hidden></p>
+
+    <div class="canvas-tools">
+      <button type="button" class="link-btn" id="btn-zoom-out" title="Dézoomer">−</button>
+      <span class="zoom-value" id="zoom-value">20 px/mm</span>
+      <button type="button" class="link-btn" id="btn-zoom-in" title="Zoomer">+</button>
+      <button type="button" class="link-btn" id="btn-zoom-fit">ajuster</button>
+      <span class="tool-sep"></span>
+      <button type="button" class="link-btn" id="btn-animate">▶ animer</button>
+      <input type="number" id="anim-speed" value="0.2" step="0.05" min="0.01" max="5"
+             title="Tours par seconde du mobile le plus rapide" />
+      <span class="anim-scale" id="anim-scale">—</span>
+      <span class="canvas-hint">molette : zoom · glisser : déplacer</span>
+    </div>
+
+    <div class="ruled-frame">
+      <div class="corner"></div>
+      <div class="ruler-top" id="ruler-top"></div>
+      <div class="ruler-left" id="ruler-left"></div>
+      <div class="drawing-area" id="drawing-area"></div>
+    </div>
+  </div>
+
+</main>
+
+<footer class="app-footer">
+  Deux topologies par complication : <code>chaîne simple</code> (roue&nbsp;→&nbsp;pignon coaxial&nbsp;→&nbsp;roue&nbsp;→&nbsp;pignon…) ou
+  <code>sortie coaxiale</code> (entrée et sortie sur le même axe, engrenage revertant). Le module est commun aux deux
+  roues d'un même engrènement et varie de façon monotone le long du train. Sens de rotation vu de dessus : chaque
+  engrènement extérieur inverse le sens, un renvoi le rétablit (au plus un renvoi automatique par complication) ;
+  un engrènement <code>intérieur</code> (couronne annulaire, colonne « Int. ») ne l'inverse pas, rapproche les axes
+  — l'entraxe devient la différence des rayons — et laisse son centre libre pour y loger d'autres mobiles.
+  La cible se donne au choix en ratio direct ou en vitesses (tours par minute / heure / jour, ou durée d'un tour),
+  et la bibliothèque charge les complications classiques. Les mobiles sont répartis automatiquement sur le nombre de niveaux choisi. Denture dessinée en approximation
+  simplifiée (pas un profil développante réel).
+</footer>
+
+<script src="js/gear-model.js"></script>
+<script src="js/placer.js"></script>
+<script src="js/ratio-search.js"></script>
+<script src="js/complication.js"></script>
+<script src="js/render.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
