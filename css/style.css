@@ -613,3 +613,34 @@ span.alert {
   min-width: 8rem;
   color: var(--ink-soft);
 }
+
+/* ------------------------------------------------------------------ */
+/* Train revertant : couple de modules                                 */
+/* ------------------------------------------------------------------ */
+/* Module unique = vrai train revertant ; module decale = second choix,
+   geometriquement valide mais deux tailles d'outils au lieu d'une. */
+td.module-same {
+  color: var(--ok);
+  font-weight: 500;
+}
+
+td.module-split {
+  color: var(--brass);
+}
+
+/* ------------------------------------------------------------------ */
+/* Aiguilles indicatrices                                              */
+/* ------------------------------------------------------------------ */
+.canvas-tools .tool-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.canvas-tools .tool-check input {
+  margin: 0;
+}
