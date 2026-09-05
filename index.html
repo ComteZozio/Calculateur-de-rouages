@@ -21,6 +21,22 @@
   <!-- Colonne de contrôle -->
   <div class="control-column">
 
+    <section class="panel" id="panel-assembly">
+      <h2>Assemblages</h2>
+      <div class="field-row">
+        <div class="field full">
+          <label for="assembly-select">Montage complet</label>
+          <select id="assembly-select"></select>
+        </div>
+      </div>
+      <p class="empty-note" id="assembly-note"></p>
+      <p class="empty-note">
+        Certains mécanismes n'ont de sens qu'à plusieurs complications reliées entre elles :
+        choisir un assemblage les crée toutes, déjà raccordées. Cela remplace la configuration
+        en cours.
+      </p>
+    </section>
+
     <div id="complications"></div>
     <button id="btn-add-complication" type="button" class="secondary">+ Ajouter une complication</button>
     <p class="empty-note">
@@ -63,8 +79,23 @@
           <input type="number" id="plate-diameter" step="0.5" value="30" min="1" />
         </div>
         <div class="field">
-          <label for="levels">Niveaux (hauteurs)</label>
-          <input type="number" id="levels" value="2" min="1" max="10" />
+          <label for="arbor-diameter">Diamètre d'arbre (mm)</label>
+          <input type="number" id="arbor-diameter" step="0.05" min="0" value="0.75" />
+        </div>
+      </div>
+
+      <p class="empty-note">
+        L'arbre n'est pas un point : c'est lui qu'une roue voisine recouvre
+        ou laisse libre. Son diamètre suit la taille de la platine — 30 mm
+        de platine, c'est une montre et des arbres de moins d'un
+        millimètre ; une platine de pendule en demande plusieurs. Le champ
+        se met à jour avec la platine tant que tu n'y touches pas.
+      </p>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="levels">Niveaux (plafond)</label>
+          <input type="number" id="levels" value="4" min="1" max="10" />
         </div>
       </div>
 
@@ -72,9 +103,10 @@
         Les mobiles sont répartis sur plusieurs niveaux le long des arbres :
         deux roues qui engrènent sont au même niveau, deux roues d'un même
         arbre à des niveaux différents, et deux roues de niveaux différents
-        peuvent se recouvrir en projection sans se toucher. Moins de niveaux
-        = mouvement plus plat ; la répartition est choisie automatiquement
-        et indiquée sur le dessin (N1, N2…).
+        peuvent se recouvrir en projection sans se toucher. Le placeur part
+        du minimum structurel et n'ajoute une hauteur que si la précédente
+        ne mène nulle part — le nombre retenu est indiqué dans le bandeau,
+        et sur le dessin (N1, N2…). Ce champ n'est qu'un plafond.
       </p>
 
       <p class="empty-note">
@@ -135,6 +167,7 @@
       <input type="number" id="anim-speed" value="0.2" step="0.05" min="0.01" max="5"
              title="Tours par seconde du mobile le plus rapide" />
       <span class="anim-scale" id="anim-scale">—</span>
+      <label class="tool-check" title="Aiguille indicatrice sur la sortie de chaque complication"><input type="checkbox" id="chk-hands" checked /> aiguilles</label>
       <span class="canvas-hint">molette : zoom · glisser : déplacer</span>
     </div>
 
@@ -149,9 +182,34 @@
 </main>
 
 <footer class="app-footer">
-  Deux topologies par complication : <code>chaîne simple</code> (roue&nbsp;→&nbsp;pignon coaxial&nbsp;→&nbsp;roue&nbsp;→&nbsp;pignon…) ou
+  Trois topologies par complication : <code>chaîne simple</code> (roue&nbsp;→&nbsp;pignon coaxial&nbsp;→&nbsp;roue&nbsp;→&nbsp;pignon…) ou
   <code>sortie coaxiale</code> (entrée et sortie sur le même axe, engrenage revertant). Le module est commun aux deux
-  roues d'un même engrènement et varie de façon monotone le long du train. Sens de rotation vu de dessus : chaque
+  roues d'un même engrènement et varie de façon monotone le long du train. En sortie coaxiale les deux engrènements
+  relient les <em>mêmes</em> deux axes : leurs entraxes doivent être égaux, donc m₁·(Z<sub>a</sub>+Z<sub>b</sub>) =
+  m₂·(Z<sub>c</sub>+Z<sub>d</sub>). Les dents sont cherchées sous cette contrainte, en privilégiant le module unique
+  (le vrai <em>reverted gear train</em>) ; à défaut le module d'une des deux paires est décalé, en restant sur des
+  valeurs rondes au centième. La troisième topologie est le train
+  <code>épicycloïdal</code> — deux planétaires coaxiaux, un porte-satellites libre sur le même axe, un satellite
+  porté par lui — dans les quatre types d'Augereau. Sa cinématique tient dans la relation de Willis
+  ω<sub>B</sub> = R·ω<sub>A</sub> + (1−R)·ω<sub>U</sub>, où R est le rapport de base mesuré porte-satellites bloqué :
+  immobiliser un membre en fait un réducteur, n'en immobiliser aucun en fait un <em>différentiel</em>. Ce dernier
+  ne se donne pas un ratio — il n'a pas d'entrée ni de sortie uniques : on pose les <em>trois</em> vitesses d'un
+  mode de fonctionnement (zéro admis pour un membre tenu, signe négatif pour l'autre sens) et le rapport de base
+  s'en déduit. La cage lit alors une moyenne pondérée des deux planétaires, jamais une différence : les deux
+  coefficients de Willis somment toujours à 1. Là encore les
+  deux engrènements relient les mêmes deux axes, donc 2D = m<sub>A</sub>(A±a) = m<sub>B</sub>(B±b).
+  Une <code>came</code> peut être montée sur la sortie de n'importe quelle complication. Elle sert là où le rouage
+  ne peut rien : aucun rapport d'engrenage ne produit l'équation du temps ni l'heure du lever du soleil, car ce ne
+  sont pas des fonctions linéaires du temps. La came encode la fonction dans son rayon, et le palpeur la lit. Deux
+  façons de lire, qui ne donnent pas la même grandeur : un palpeur <code>linéaire</code> coulisse sur un rayon et
+  sort une <em>course</em> en millimètres ; un palpeur <code>angulaire</code> — le râteau pivoté — sort un
+  <em>angle</em>, et c'est lui qu'on injecte dans la seconde entrée d'un différentiel pour ajouter ou retrancher la
+  grandeur portée par la came à une roue qui tourne déjà. Son bec décrit un arc autour du pivot et non un rayon : le
+  point de contact n'est donc pas à la direction du pivot, il se résout à chaque instant.
+  Le profil est taillé dans le sens où la came tournera, de sorte
+  que l'année défile à l'endroit devant le palpeur, et le programme vérifie que le mobile porteur fait bien
+  un tour par an — une came d'équation montée sur autre chose affiche une grandeur qui n'existe pas.
+  Sens de rotation vu de dessus : chaque
   engrènement extérieur inverse le sens, un renvoi le rétablit (au plus un renvoi automatique par complication) ;
   un engrènement <code>intérieur</code> (couronne annulaire, colonne « Int. ») ne l'inverse pas, rapproche les axes
   — l'entraxe devient la différence des rayons — et laisse son centre libre pour y loger d'autres mobiles.
