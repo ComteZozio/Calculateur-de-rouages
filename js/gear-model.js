@@ -15,6 +15,11 @@ class Wheel {
     // denture INTERIEURE (couronne annulaire) : les dents pointent vers le
     // centre et le mobile mene tourne a l'interieur
     this.internal = internal;
+    // Rayon BALAYE autour du centre de l'axe. Nul pour un mobile ordinaire ;
+    // pour l'enveloppe d'un train epicycloidal, c'est le disque que le
+    // satellite decrit en tournant avec le porte-satellites -- rien d'autre
+    // ne peut occuper ce volume a cette hauteur.
+    this.sweep = 0;
   }
 
   get pitchRadius() {
@@ -52,6 +57,7 @@ class Wheel {
    * en collision.
    */
   get band() {
+    if (this.sweep > 0) return { inner: 0, outer: this.sweep };
     return this.internal
       ? { inner: this.tipRadius, outer: this.rootRadius + this.rimThickness }
       : { inner: 0, outer: this.tipRadius };
@@ -76,7 +82,12 @@ function bandsClear(b1, b2, d, eps = 1e-9) {
   return false;
 }
 
-/** Le centre situe a la distance `d` tombe-t-il sur la matiere du mobile ? */
+/**
+ * Le centre situe a la distance `d` tombe-t-il sur la matiere du mobile ?
+ * Conserve pour le raisonnement sur un centre ponctuel ; le placeur, lui,
+ * traite l'arbre comme un DISQUE et passe par bandsClear -- un arbre a un
+ * diametre, et c'est ce diametre qu'une roue voisine recouvre.
+ */
 function bandCovers(band, d, eps = 1e-9) {
   return d >= band.inner - eps && d <= band.outer + eps;
 }
@@ -121,6 +132,48 @@ class GearTrain {
     // informations d'origine de chaque mobile (complication, nom local,
     // nature : roue du train ou roue de renvoi) -- purement descriptif.
     this.wheelMeta = new Map();
+    // mobiles necessairement a la MEME hauteur sans pour autant engrener
+    // (l'enveloppe balayee par un satellite et ce satellite, par exemple).
+    this.coplanarPairs = [];
+    // paires qui ne peuvent pas se heurter parce qu'elles appartiennent au
+    // meme sous-ensemble mecanique -- un satellite ne heurte pas l'enveloppe
+    // qu'il decrit lui-meme.
+    this.ignoredPairs = new Set();
+    // trains epicycloidaux : leurs deux engrenements ne sont valides QUE
+    // dans le repere du porte-satellites, la propagation ordinaire ne doit
+    // donc pas les emprunter (voir la formule de Willis).
+    this.epicyclicBlocks = [];
+    // entraxes imposes par une piece autre qu'un engrenement (bras de came)
+    this.axisLinks = [];
+  }
+
+  addCoplanarPair(nameA, nameB) {
+    if (nameA !== nameB) this.coplanarPairs.push([nameA, nameB]);
+  }
+
+  addIgnoredPair(nameA, nameB) {
+    this.ignoredPairs.add(nameA < nameB ? `${nameA}|${nameB}` : `${nameB}|${nameA}`);
+  }
+
+  isIgnoredPair(nameA, nameB) {
+    return this.ignoredPairs.has(nameA < nameB ? `${nameA}|${nameB}` : `${nameB}|${nameA}`);
+  }
+
+  addEpicyclicBlock(block) {
+    this.epicyclicBlocks.push(block);
+  }
+
+  /**
+   * Entraxe IMPOSE entre deux axes qui n'engrenent pas. Un engrenement fixe
+   * l'entraxe parce que les dentures doivent se toucher ; ici c'est une
+   * autre piece qui l'impose -- typiquement le bras qui porte le galet d'une
+   * came, dont la longueur fige la distance entre l'axe de la came et le
+   * pivot du bras. Pour le placeur, la contrainte est de meme nature qu'un
+   * engrenement : deux axes a distance connue.
+   */
+  addAxisLink(wheelA, wheelB, distance, reason = "") {
+    if (wheelA === wheelB || !(distance > 0)) return;
+    this.axisLinks.push({ wheelA, wheelB, distance, reason });
   }
 
   addWheel(wheel) {

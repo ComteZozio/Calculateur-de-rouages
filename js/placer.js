@@ -54,10 +54,13 @@ function circleIntersections(c1, r1, c2, r2) {
 const FIXED_TOLERANCE = 0.05; // mm : ecart admis entre deux positions imposees adjacentes
 
 class Layout {
-  constructor(positions, score, levels) {
+  constructor(positions, score, levels, stats = {}) {
     this.positions = positions; // Map wheelName -> {x, y}
-    this.score = score;
+    this.score = score; // rayon englobant, en mm
     this.levels = levels ?? new Map(); // Map wheelName -> niveau (1..n)
+    this.coveredAxes = stats.coveredAxes ?? 0; // arbres recouverts (donc a pont)
+    this.axisCount = stats.axisCount ?? 0;
+    this.levelCount = stats.levelCount ?? 1; // niveaux REELLEMENT utilises
   }
 }
 
@@ -71,7 +74,17 @@ class Placer {
     this.nRandomRestarts = options.nRandomRestarts ?? 200;
     this.rng = mulberry32(options.seed ?? Date.now());
     this.rootWheel = options.rootWheel ?? null;
-    this.levels = Math.max(1, Math.floor(options.levels ?? 2));
+    // `levels` est un PLAFOND : place() part du minimum structurel et
+    // n'ajoute une hauteur que si la precedente ne suffit pas, l'objectif
+    // etant le mouvement le plus plat possible.
+    this.maxLevels = Math.max(1, Math.floor(options.levels ?? 2));
+    this.levels = this.maxLevels;
+    // Un arbre n'est pas un point : son diametre suit la taille de la
+    // platine (une montre de 30 mm et une pendule n'ont pas les memes
+    // pivots). C'est ce disque, et non le centre geometrique, qu'un autre
+    // mobile recouvre ou laisse libre.
+    this.arborRadius = Math.max(0, options.arborRadius ?? 0);
+    this.arborBand = { inner: 0, outer: this.arborRadius };
 
     this.axisGroups = train.axisGroups();
     this.wheelToGroup = new Map();
@@ -85,6 +98,18 @@ class Placer {
       const d = mesh.centerDistance(train.wheels);
       this.groupEdges.get(ga).push([gb, d]);
       this.groupEdges.get(gb).push([ga, d]);
+    }
+
+    // Un entraxe impose par une piece (bras de came) contraint le placement
+    // exactement comme un engrenement : deux axes a distance connue. En
+    // l'ajoutant ici, la fermeture de chaine, le calcul des composantes et
+    // la detection de conflits en heritent sans autre modification.
+    for (const link of train.axisLinks ?? []) {
+      const ga = this.wheelToGroup.get(link.wheelA);
+      const gb = this.wheelToGroup.get(link.wheelB);
+      if (!ga || !gb || ga === gb) continue;
+      this.groupEdges.get(ga).push([gb, link.distance]);
+      this.groupEdges.get(gb).push([ga, link.distance]);
     }
 
     this.meshPairs = new Set();
@@ -118,6 +143,11 @@ class Placer {
     };
     for (const name of train.wheels.keys()) parent.set(name, name);
     for (const mesh of train.meshes) parent.set(find(mesh.wheelA), find(mesh.wheelB));
+    // mobiles forcement a la meme hauteur sans engrener : l'enveloppe
+    // balayee par un satellite est au niveau de ce satellite
+    for (const [a, b] of train.coplanarPairs ?? []) {
+      if (parent.has(a) && parent.has(b)) parent.set(find(a), find(b));
+    }
     let nextId = 0;
     const idOfRoot = new Map();
     for (const name of train.wheels.keys()) {
@@ -146,11 +176,35 @@ class Placer {
     return a < b ? `${a}|${b}` : `${b}|${a}`;
   }
 
+  /**
+   * Paires dispensees de tout controle geometrique : celles qui engrenent
+   * (elles se touchent par construction), celles declarees solidaires d'un
+   * meme sous-ensemble (un satellite et l'enveloppe qu'il decrit), et
+   * celles dont l'un des membres n'a aucune matiere -- la cage d'un train
+   * epicycloidal n'est representee que par son enveloppe.
+   */
+  _exempt(w1, w2) {
+    if (this.meshPairs.has(this._pairKey(w1, w2))) return true;
+    if (this.train.isIgnoredPair?.(w1, w2)) return true;
+    return this.train.wheels.get(w1).band.outer <= 0 || this.train.wheels.get(w2).band.outer <= 0;
+  }
+
   /** Nombre minimal de niveaux : le plus grand nombre de classes portees par un meme arbre. */
   requiredLevels() {
     let max = 1;
     for (const classes of this.classesOfGroup.values()) max = Math.max(max, classes.length);
     return max;
+  }
+
+  /**
+   * Nombre de groupes d'engrenement (classes). Des qu'il depasse le nombre
+   * de niveaux, au moins deux groupes partagent forcement une hauteur --
+   * ce n'est pas redhibitoire (ils peuvent etre loin l'un de l'autre), mais
+   * c'est la premiere cause d'echec sur les trains longs, ou des axes
+   * voisins d'un cran se retrouvent au meme niveau a un entraxe impose.
+   */
+  classCount() {
+    return this.classNeighbors.size;
   }
 
   /**
@@ -163,8 +217,17 @@ class Placer {
   diagnoseFixedConflicts() {
     const conflicts = [];
     for (const message of this.positionProblems) conflicts.push({ kind: "position", message });
+
+    // Un mobile plus large que la platine ne se placera jamais : ni l'angle,
+    // ni le niveau, ni le nombre de redemarrages n'y changeront rien. Le
+    // dire tout de suite evite d'epuiser toute la recherche pour rien.
+    for (const [name, wheel] of this.train.wheels) {
+      if (wheel.outerRadius > this.plateRadius + 1e-9) {
+        conflicts.push({ kind: "platine", wheel: name, radius: wheel.outerRadius, plateRadius: this.plateRadius });
+      }
+    }
     for (const [group, classes] of this.classesOfGroup) {
-      if (classes.length > this.levels) conflicts.push({ kind: "niveaux", group, needed: classes.length, wheels: this.axisGroups.get(group) });
+      if (classes.length > this.maxLevels) conflicts.push({ kind: "niveaux", group, needed: classes.length, wheels: this.axisGroups.get(group) });
     }
 
     // deux axes DISTINCTS imposes au meme point : c'est un montage
@@ -191,6 +254,38 @@ class Placer {
       }
     }
 
+    // Deux engrenements qui relient le MEME couple d'axes doivent demander
+    // le meme entraxe -- c'est la contrainte du train revertant. Sans ce
+    // controle l'echec serait muet : _parentAndDistance ne retient que le
+    // premier voisin place, le second entraxe serait simplement ignore et
+    // la seconde paire dessinee sans engrener.
+    const meshesByAxisPair = new Map();
+    const record = (a, b, distance, label) => {
+      const key = this._pairKey(this.wheelToGroup.get(a), this.wheelToGroup.get(b));
+      if (!meshesByAxisPair.has(key)) meshesByAxisPair.set(key, []);
+      meshesByAxisPair.get(key).push({ mesh: { wheelA: a, wheelB: b }, distance, label });
+    };
+    for (const mesh of this.train.meshes) record(mesh.wheelA, mesh.wheelB, mesh.centerDistance(this.train.wheels));
+    // une liaison de bras et un engrenement entre les memes axes doivent
+    // demander le meme entraxe, sans quoi la piece ne se monte pas
+    for (const link of this.train.axisLinks ?? []) record(link.wheelA, link.wheelB, link.distance, link.reason);
+    for (const list of meshesByAxisPair.values()) {
+      if (list.length < 2) continue;
+      const reference = list[0];
+      for (const other of list.slice(1)) {
+        if (Math.abs(other.distance - reference.distance) > 1e-6) {
+          conflicts.push({
+            kind: "entraxe",
+            wheelA: `${reference.mesh.wheelA} ↔ ${reference.mesh.wheelB}`,
+            wheelB: `${other.mesh.wheelA} ↔ ${other.mesh.wheelB}`,
+            distance: other.distance,
+            required: reference.distance,
+          });
+          break;
+        }
+      }
+    }
+
     const seenGroupPairs = new Set();
     for (const [group, edges] of this.groupEdges) {
       for (const [otherGroup, dist] of edges) {
@@ -200,14 +295,16 @@ class Placer {
 
         for (const w1 of this.axisGroups.get(group)) {
           for (const w2 of this.axisGroups.get(otherGroup)) {
-            if (this.meshPairs.has(this._pairKey(w1, w2))) continue;
+            if (this._exempt(w1, w2)) continue;
             const b1 = this.train.wheels.get(w1).band;
             const b2 = this.train.wheels.get(w2).band;
 
-            if (this.protectedWheels.has(w2) && bandCovers(b1, dist)) {
-              conflicts.push({ kind: "recouvrement", wheelA: w2, wheelB: w1, distance: dist, required: b1.outer });
-            } else if (this.protectedWheels.has(w1) && bandCovers(b2, dist)) {
-              conflicts.push({ kind: "recouvrement", wheelA: w1, wheelB: w2, distance: dist, required: b2.outer });
+            // l'arbre est un disque : c'est lui, et non le point central,
+            // qu'une roue voisine recouvre
+            if (this.protectedWheels.has(w2) && !bandsClear(this.arborBand, b1, dist)) {
+              conflicts.push({ kind: "recouvrement", wheelA: w2, wheelB: w1, distance: dist, required: b1.outer + this.arborRadius });
+            } else if (this.protectedWheels.has(w1) && !bandsClear(this.arborBand, b2, dist)) {
+              conflicts.push({ kind: "recouvrement", wheelA: w1, wheelB: w2, distance: dist, required: b2.outer + this.arborRadius });
             } else if (this.classOf.get(w1) === this.classOf.get(w2) && !bandsClear(b1, b2, dist)) {
               conflicts.push({ kind: "denture", wheelA: w1, wheelB: w2, distance: dist, required: b1.outer + b2.outer });
             }
@@ -238,19 +335,78 @@ class Placer {
       for (const w1 of this.axisGroups.get(group)) {
         const b1 = this.train.wheels.get(w1).band;
         for (const w2 of this.axisGroups.get(otherGroup)) {
-          if (this.meshPairs.has(this._pairKey(w1, w2))) continue;
+          if (this._exempt(w1, w2)) continue;
           const b2 = this.train.wheels.get(w2).band;
 
           if (level.get(this.classOf.get(w1)) !== level.get(this.classOf.get(w2))) {
-            // niveaux differents : pas de contact de denture, mais le centre
+            // niveaux differents : pas de contact de denture, mais l'ARBRE
             // d'une roue protegee ne doit pas passer sous la matiere de
             // l'autre (le trou d'une couronne, lui, ne recouvre rien)
-            if (this.protectedWheels.has(w2) && bandCovers(b1, dist)) return true;
-            if (this.protectedWheels.has(w1) && bandCovers(b2, dist)) return true;
+            if (this.protectedWheels.has(w2) && !bandsClear(this.arborBand, b1, dist)) return true;
+            if (this.protectedWheels.has(w1) && !bandsClear(this.arborBand, b2, dist)) return true;
             continue;
           }
           if (!bandsClear(b1, b2, dist)) return true;
         }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * L'arbre de cet axe est-il recouvert par la matiere d'un autre mobile ?
+   * Un arbre DEGAGE se tient directement par la platine ; un arbre
+   * recouvert reclame un pont, c'est-a-dire une piece de plus, un reglage
+   * de plus et un demontage moins commode. C'est le critere principal du
+   * placement : tant qu'il reste de la place sur la platine, mieux vaut
+   * l'occuper que de tout tasser au centre.
+   *
+   * Deux axes exactement superposes ne comptent pas : c'est un montage
+   * coaxial -- un canon tournant sur l'arbre de l'autre -- et non un
+   * recouvrement.
+   */
+  _axisCovered(group, pos, placed) {
+    const mine = this.axisGroups.get(group);
+    // un axe porte par une cage (satellite d'un train epicycloidal) n'a pas
+    // besoin de la platine : il ne demandera jamais de pont
+    if (mine.every((n) => this.train.wheels.get(n).carried)) return false;
+    for (const [other, otherPos] of placed) {
+      if (other === group) continue;
+      const dist = Math.hypot(pos.x - otherPos.x, pos.y - otherPos.y);
+      if (dist < 1e-6) continue;
+      for (const name of this.axisGroups.get(other)) {
+        if (mine.every((w) => this._exempt(w, name))) continue;
+        if (!bandsClear(this.arborBand, this.train.wheels.get(name).band, dist)) return true;
+      }
+    }
+    return false;
+  }
+
+  _countCoveredAxes(placed) {
+    let n = 0;
+    for (const [group, pos] of placed) if (this._axisCovered(group, pos, placed)) n++;
+    return n;
+  }
+
+  /**
+   * Cette position condamne-t-elle un arbre -- le sien ou celui d'un axe
+   * deja pose ? Sert a departager les angles candidats AVANT de choisir :
+   * prendre le premier angle valide venu enterre souvent un centre qu'un
+   * autre angle, tout aussi valide, aurait laisse libre.
+   */
+  _wouldCoverAxis(group, pos, placed) {
+    const mine = this.axisGroups.get(group);
+    for (const [other, otherPos] of placed) {
+      if (other === group) continue;
+      const dist = Math.hypot(pos.x - otherPos.x, pos.y - otherPos.y);
+      if (dist < 1e-6) continue;
+      for (const name of this.axisGroups.get(other)) {
+        if (mine.every((w) => this._exempt(w, name))) continue;
+        if (!bandsClear(this.arborBand, this.train.wheels.get(name).band, dist)) return true;
+      }
+      for (const w of mine) {
+        if (this.axisGroups.get(other).every((n) => this._exempt(w, n))) continue;
+        if (!bandsClear(this.arborBand, this.train.wheels.get(w).band, dist)) return true;
       }
     }
     return false;
@@ -330,18 +486,29 @@ class Placer {
 
   _tryPlaceAround(group, parent, dist, placed, level, reach) {
     const p = placed.get(parent);
-    const fixedNeighbors = this.groupEdges.get(group).filter(([nb]) => this.fixedPositions.has(nb) && !placed.has(nb));
+
+    // Contraintes de FERMETURE : tout voisin dont la position est deja
+    // connue impose son propre entraxe, au meme titre que le parent. Deux
+    // cas s'y ramenent : une position imposee par clic, et un axe deja
+    // place atteint par un autre chemin -- c'est-a-dire un CYCLE dans le
+    // graphe des axes (un renvoi monte en parallele d'un engrenement
+    // direct, typiquement dans un train revertant). Sans cette fermeture
+    // l'axe serait pose au bon entraxe du seul parent et n'engrenerait pas
+    // avec l'autre voisin.
+    const constraints = [];
+    for (const [nb, d] of this.groupEdges.get(group)) {
+      if (nb === parent) continue;
+      if (placed.has(nb)) constraints.push([placed.get(nb), d]);
+      else if (this.fixedPositions.has(nb)) constraints.push([this.fixedPositions.get(nb), d]);
+    }
 
     let candidates;
-    if (fixedNeighbors.length) {
-      // la chaine doit se refermer sur une position imposee voisine :
-      // intersection du cercle autour du parent et du cercle autour du point fixe
-      const [f, df] = fixedNeighbors[0];
-      candidates = circleIntersections(p, dist, this.fixedPositions.get(f), df).filter((pos) =>
-        fixedNeighbors.slice(1).every(([g2, d2]) => {
-          const fp = this.fixedPositions.get(g2);
-          return Math.abs(Math.hypot(pos.x - fp.x, pos.y - fp.y) - d2) <= FIXED_TOLERANCE;
-        })
+    if (constraints.length) {
+      // intersection du cercle autour du parent et du cercle autour de la
+      // premiere contrainte ; les autres ne font plus que filtrer
+      const [c0, d0] = constraints[0];
+      candidates = circleIntersections(p, dist, c0, d0).filter((pos) =>
+        constraints.slice(1).every(([c, d]) => Math.abs(Math.hypot(pos.x - c.x, pos.y - c.y) - d) <= FIXED_TOLERANCE)
       );
     } else {
       const nAngles = Math.max(1, Math.round((2 * Math.PI) / this.angleStep));
@@ -353,6 +520,9 @@ class Placer {
     shuffle(candidates, this.rng);
 
     const groupMaxTip = this._groupOuterRadius(group);
+    // deux passes : les positions qui ne condamnent aucun arbre d'abord,
+    // les autres seulement en repli
+    const covering = [];
     for (const pos of candidates) {
       if (!this._withinPlate(pos, groupMaxTip)) continue;
       // elagage : un point fixe non encore atteint doit rester a portee de la chaine restante
@@ -369,9 +539,13 @@ class Placer {
       }
       if (!reachable) continue;
       if (this._collides(group, pos, placed, level)) continue;
+      if (this._wouldCoverAxis(group, pos, placed)) {
+        covering.push(pos);
+        continue;
+      }
       return pos;
     }
-    return null;
+    return covering.length ? covering[0] : null;
   }
 
   _placeComponent(root, placed, visited, level, reach) {
@@ -409,10 +583,16 @@ class Placer {
       samples.push({ x: this.plateCenter.x + r * Math.cos(theta), y: this.plateCenter.y + r * Math.sin(theta), r });
     }
     samples.sort((a, b) => a.r - b.r);
+    let fallback = null;
     for (const pos of samples) {
-      if (!this._collides(group, pos, placed, level)) return { x: pos.x, y: pos.y };
+      if (this._collides(group, pos, placed, level)) continue;
+      if (this._wouldCoverAxis(group, pos, placed)) {
+        fallback = fallback ?? { x: pos.x, y: pos.y };
+        continue;
+      }
+      return { x: pos.x, y: pos.y };
     }
-    return null;
+    return fallback;
   }
 
   _compactnessScore(placed) {
@@ -436,8 +616,24 @@ class Placer {
     return levels;
   }
 
+  /**
+   * Cherche le placement en utilisant le MOINS DE NIVEAUX POSSIBLE : on
+   * part du minimum structurel (le plus grand nombre de mobiles portes par
+   * un meme arbre) et l'on n'ajoute une hauteur que si la precedente ne
+   * mene nulle part. Un niveau de plus, c'est un mouvement plus epais --
+   * ca ne se paie que quand la geometrie l'exige vraiment.
+   */
   place() {
     if (this.positionProblems.length) return null;
+    for (let n = Math.max(1, this.requiredLevels()); n <= this.maxLevels; n++) {
+      this.levels = n;
+      const layout = this._placeWithLevels();
+      if (layout) return layout;
+    }
+    return null;
+  }
+
+  _placeWithLevels() {
     const groups = [...this.axisGroups.keys()];
     const rootWheelGroup = this.rootWheel ? this.wheelToGroup.get(this.rootWheel) : undefined;
     const primaryRoot = rootWheelGroup ?? groups[0];
@@ -481,9 +677,17 @@ class Placer {
       }
 
       if (ok) {
-        const score = this._compactnessScore(placed);
-        if (best === null || score < best.score) {
-          best = new Layout(this._expandToWheelPositions(placed), score, this._expandToWheelLevels(level));
+        // Objectif : d'abord le maximum d'arbres degages, la compacite ne
+        // departage qu'ensuite. Tasser un mouvement qui a de la place ne
+        // sert a rien ; ce qui se paie, ce sont les ponts.
+        const covered = this._countCoveredAxes(placed);
+        const radius = this._compactnessScore(placed);
+        if (best === null || covered < best.coveredAxes || (covered === best.coveredAxes && radius < best.score)) {
+          best = new Layout(this._expandToWheelPositions(placed), radius, this._expandToWheelLevels(level), {
+            coveredAxes: covered,
+            axisCount: placed.size,
+            levelCount: new Set(level.values()).size,
+          });
         }
       }
     }

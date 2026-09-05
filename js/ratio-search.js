@@ -59,6 +59,11 @@ function buildKinematicGraph(train) {
   for (const name of train.wheels.keys()) adjacency.set(name, []);
 
   for (const mesh of train.meshes) {
+    // Un engrenement de train epicycloidal ne dit rien tant que l'on ne
+    // sait pas a quelle vitesse tourne le porte-satellites : son rapport
+    // n'est vrai que dans le repere de la cage. La propagation ordinaire
+    // l'ignore, la fermeture de Willis s'en charge ensuite.
+    if (mesh.epicyclic) continue;
     const internal = train.isInternalMesh(mesh);
     adjacency.get(mesh.wheelA).push({ to: mesh.wheelB, kind: "mesh", internal });
     adjacency.get(mesh.wheelB).push({ to: mesh.wheelA, kind: "mesh", internal });
@@ -84,6 +89,92 @@ function buildKinematicGraph(train) {
   return adjacency;
 }
 
+// ------------------------------------------------------------------
+// Trains epicycloidaux : formule de Willis
+// ------------------------------------------------------------------
+
+/**
+ * Rapport de BASE d'un train epicycloidal : le rapport omega_B / omega_A
+ * mesure porte-satellites BLOQUE, donc celui d'un train ordinaire. Signe
+ * compris -- chaque engrenement exterieur inverse, un engrenement interieur
+ * conserve. C'est le R des formules (104), (115) d'Augereau, et c'est la
+ * seule grandeur dont depend toute la cinematique du train.
+ */
+function epicyclicBasicRatio(train, block) {
+  let ratio = 1;
+  for (const step of block.meshes) {
+    const zFrom = train.wheels.get(step.from)?.teeth;
+    const zTo = train.wheels.get(step.to)?.teeth;
+    if (!zFrom || !zTo) return NaN;
+    ratio *= (step.internal ? 1 : -1) * (zFrom / zTo);
+  }
+  return ratio;
+}
+
+/**
+ * Formule de Willis (133) : R = (w_B - w_U) / (w_A - w_U), soit
+ *
+ *     w_B = R.w_A + (1 - R).w_U
+ *
+ * Les trois membres -- les deux planetaires et le porte-satellites -- sont
+ * lies par cette seule relation : en connaitre DEUX donne le troisieme.
+ * C'est ce qui fait d'un train epicycloidal un differentiel : la position
+ * du porte-satellites mesure l'ecart entre les deux planetaires, et c'est
+ * exactement ainsi que se lit une reserve de marche (l'un des planetaires
+ * suit l'arbre de barillet, l'autre le barillet).
+ *
+ * Retourne true si la fermeture a appris quelque chose.
+ */
+function closeWillis(train, block, speed) {
+  const R = epicyclicBasicRatio(train, block);
+  if (!Number.isFinite(R)) return false;
+
+  const { planetA, planetB, carrier } = block;
+  const known = (n) => speed.has(n);
+  let learned = false;
+
+  if (known(planetA) && known(carrier) && !known(planetB)) {
+    speed.set(planetB, R * speed.get(planetA) + (1 - R) * speed.get(carrier));
+    learned = true;
+  } else if (known(planetB) && known(carrier) && !known(planetA)) {
+    if (Math.abs(R) < 1e-12) return false;
+    speed.set(planetA, (speed.get(planetB) - (1 - R) * speed.get(carrier)) / R);
+    learned = true;
+  } else if (known(planetA) && known(planetB) && !known(carrier)) {
+    if (Math.abs(1 - R) < 1e-12) return false; // R = 1 : la cage est indeterminee
+    speed.set(carrier, (speed.get(planetB) - R * speed.get(planetA)) / (1 - R));
+    learned = true;
+  }
+
+  // Une fois deux membres connus, les satellites suivent : leur vitesse se
+  // lit dans le repere de la cage puis se ramene au repere fixe.
+  if (known(planetA) && known(carrier)) {
+    const relative = speed.get(planetA) - speed.get(carrier);
+    let cascade = relative;
+    for (const step of block.meshes) {
+      const zFrom = train.wheels.get(step.from)?.teeth;
+      const zTo = train.wheels.get(step.to)?.teeth;
+      if (!zFrom || !zTo) break;
+      cascade *= (step.internal ? 1 : -1) * (zFrom / zTo);
+      if (!speed.has(step.to) && step.to !== planetB) {
+        speed.set(step.to, speed.get(carrier) + cascade);
+        learned = true;
+      }
+    }
+    // les satellites solidaires partagent la vitesse du premier
+    for (const [a, b] of block.rigidSatellites ?? []) {
+      if (speed.has(a) && !speed.has(b)) {
+        speed.set(b, speed.get(a));
+        learned = true;
+      } else if (speed.has(b) && !speed.has(a)) {
+        speed.set(a, speed.get(b));
+        learned = true;
+      }
+    }
+  }
+  return learned;
+}
+
 /**
  * Propage le sens de rotation (vu de dessus : +1 horaire, -1 antihoraire)
  * a partir de mobiles "racines" dont le sens est impose. Chaque
@@ -92,25 +183,72 @@ function buildKinematicGraph(train) {
  * (les mobiles non atteints n'y figurent pas).
  */
 function computeRotationSenses(train, roots) {
-  const adjacency = buildKinematicGraph(train);
+  // un engrenement EXTERIEUR inverse le sens ; un engrenement interieur et
+  // une liaison rigide le conservent
+  const value = propagateKinematics(train, roots, (cur, from, edge) => (edge.kind === "mesh" && !edge.internal ? -cur : cur), {
+    requireDeterminate: true,
+  });
   const sens = new Map();
-  for (const [root, s] of roots) {
-    if (!adjacency.has(root) || sens.has(root)) continue;
-    sens.set(root, s);
-    const queue = [root];
-    while (queue.length) {
-      const current = queue.shift();
-      const cur = sens.get(current);
+  for (const [name, v] of value) if (v > 0) sens.set(name, 1);
+  else if (v < 0) sens.set(name, -1);
+  return sens;
+}
+
+/**
+ * Un bloc epicycloidal ne livre un SENS non ambigu que si l'un de ses trois
+ * membres est immobile : la relation de Willis est une somme, et le signe
+ * d'une somme depend des grandeurs, pas seulement des signes. Un vrai
+ * differentiel a deux entrees motrices n'a donc pas de sens de sortie
+ * defini tant qu'on ne connait pas les vitesses reelles -- ce n'est pas une
+ * limite du programme mais la nature meme du mecanisme.
+ */
+function epicyclicIsDeterminate(block, value) {
+  return [block.planetA, block.planetB, block.carrier].some((n) => value.get(n) === 0);
+}
+
+/**
+ * Propagation le long du graphe cinematique, entrecoupee de fermetures de
+ * Willis. Les deux alternent jusqu'au point fixe : un membre debloque par
+ * un train epicycloidal relance la propagation ordinaire en aval, qui peut
+ * a son tour donner le deuxieme membre d'un autre bloc.
+ */
+function propagateKinematics(train, roots, transfer, options = {}) {
+  const adjacency = buildKinematicGraph(train);
+  const value = new Map();
+  const pending = [];
+  const put = (name, v) => {
+    if (!adjacency.has(name) || value.has(name) || !Number.isFinite(v)) return;
+    value.set(name, v);
+    pending.push(name);
+  };
+  for (const [name, v] of roots) put(name, v);
+
+  const drain = () => {
+    while (pending.length) {
+      const current = pending.shift();
+      const cur = value.get(current);
       for (const edge of adjacency.get(current)) {
-        if (sens.has(edge.to)) continue;
-        // un engrenement EXTERIEUR inverse le sens ; un engrenement
-        // interieur le conserve (les deux mobiles tournent ensemble)
-        sens.set(edge.to, edge.kind === "mesh" && !edge.internal ? -cur : cur);
-        queue.push(edge.to);
+        if (!value.has(edge.to)) put(edge.to, transfer(cur, current, edge));
       }
     }
+  };
+
+  drain();
+  const blocks = train.epicyclicBlocks ?? [];
+  for (let pass = 0; pass <= blocks.length; pass++) {
+    let learned = false;
+    for (const block of blocks) {
+      if (options.requireDeterminate && !epicyclicIsDeterminate(block, value)) continue;
+      const before = new Set(value.keys());
+      if (closeWillis(train, block, value)) {
+        learned = true;
+        for (const name of value.keys()) if (!before.has(name)) pending.push(name);
+      }
+    }
+    if (!learned) break;
+    drain();
   }
-  return sens;
+  return value;
 }
 
 /**
@@ -121,29 +259,13 @@ function computeRotationSenses(train, roots) {
  * Le signe du resultat coincide donc avec computeRotationSenses.
  */
 function computeAngularVelocities(train, roots) {
-  const adjacency = buildKinematicGraph(train);
-  const speed = new Map();
-  for (const [root, w0] of roots) {
-    if (!adjacency.has(root) || speed.has(root)) continue;
-    speed.set(root, w0);
-    const queue = [root];
-    while (queue.length) {
-      const current = queue.shift();
-      const cur = speed.get(current);
-      const zCur = train.wheels.get(current).teeth;
-      for (const edge of adjacency.get(current)) {
-        if (speed.has(edge.to)) continue;
-        if (edge.kind === "rigid") {
-          speed.set(edge.to, cur);
-        } else {
-          const zNext = train.wheels.get(edge.to).teeth;
-          speed.set(edge.to, (cur * zCur * (edge.internal ? 1 : -1)) / zNext);
-        }
-        queue.push(edge.to);
-      }
-    }
-  }
-  return speed;
+  return propagateKinematics(train, roots, (cur, from, edge) => {
+    if (edge.kind === "rigid") return cur;
+    const zFrom = train.wheels.get(from).teeth;
+    const zTo = train.wheels.get(edge.to).teeth;
+    if (!zFrom || !zTo) return NaN;
+    return (cur * zFrom * (edge.internal ? 1 : -1)) / zTo;
+  });
 }
 
 /**
@@ -310,6 +432,142 @@ function findTrainForRatio(ratio, positions, options = {}) {
 
     keepBest(target, { teeth: assemble(numValues, denValues), ratio: N / D, error: err });
   }
+
+  const exceedsTol = withinTol.length === 0 && closest.length > 0;
+  return { results: exceedsTol ? closest : withinTol, truncated, exceedsTol };
+}
+
+/**
+ * Recherche par ENUMERATION, pour les trains dont les dents ne sont pas
+ * librement factorisables. `findTrainForRatio` decompose independamment le
+ * numerateur et le denominateur : c'est rapide, mais incapable d'exprimer
+ * une contrainte qui LIE les roues entre elles. Le train revertant en
+ * impose une : ses deux engrenements relient le meme couple d'axes, donc
+ * m1*(Za+Zb) = m2*(Zc+Zd). Ici on balaye donc toutes les positions sauf
+ * une, la derniere etant DEDUITE du ratio, et l'on soumet chaque
+ * combinaison complete a `options.rate`.
+ *
+ * `rate(values)` recoit le tableau des dents (dans l'ordre de `positions`,
+ * reutilise d'un appel a l'autre : ne pas le conserver) et retourne null
+ * pour rejeter la combinaison, ou { penalty } pour la classer -- penalite
+ * croissante = moins bon. Les candidats dans la tolerance sont tries par
+ * penalite puis erreur ; les candidats de secours par erreur d'abord.
+ *
+ * Le cout est le PRODUIT des plages balayees : reserve aux topologies a
+ * quatre mobiles, avec `maxIterations` comme garde-fou.
+ */
+function findTrainByEnumeration(ratio, positions, options = {}) {
+  const maxResults = options.maxResults ?? 10;
+  const maxIterations = options.maxIterations ?? 1500000;
+  const tol = Number.isFinite(options.tol) && options.tol >= 0 ? options.tol : 1e-4;
+  const rate = options.rate ?? (() => ({ penalty: 0 }));
+
+  // Par defaut le ratio est un simple produit de dents^exposant, et la
+  // position pivot s'en deduit par division. Un train epicycloidal n'a pas
+  // cette forme -- son rapport est une fonction homographique du rapport de
+  // base (formule de Willis) -- d'ou ces deux crochets.
+  const achieve =
+    options.achieve ??
+    ((values) => {
+      let product = 1;
+      for (let i = 0; i < positions.length; i++) {
+        const e = positions[i].exponent;
+        if (e === 1) product *= values[i];
+        else if (e === -1) product /= values[i];
+      }
+      return product;
+    });
+  const solvePivot =
+    options.solvePivot ??
+    ((values, pivotIdx) => {
+      let rest = 1;
+      for (let i = 0; i < positions.length; i++) {
+        if (i === pivotIdx) continue;
+        const e = positions[i].exponent;
+        if (e === 1) rest *= values[i];
+        else if (e === -1) rest /= values[i];
+      }
+      if (!(rest > 0)) return NaN;
+      return positions[pivotIdx].exponent === 1 ? ratio / rest : rest / ratio;
+    });
+
+  // pivot : une position qui pese sur le ratio ET qui n'est pas figee,
+  // donc que l'on peut deduire des autres au lieu de la balayer
+  let pivot = -1;
+  for (let i = positions.length - 1; i >= 0; i--) {
+    if (positions[i].exponent !== 0 && positions[i].min < positions[i].max) {
+      pivot = i;
+      break;
+    }
+  }
+  if (options.pivot !== undefined) pivot = options.pivot;
+
+  const sweep = positions.map((_, i) => i).filter((i) => i !== pivot);
+  const values = new Array(positions.length);
+
+  const withinTol = [];
+  const closest = [];
+  const byQuality = (x, y) => x.penalty - y.penalty || x.error - y.error || x.sum - y.sum;
+  const byError = (x, y) => x.error - y.error || x.penalty - y.penalty || x.sum - y.sum;
+  const keepBest = (list, cand, cmp) => {
+    let i = list.length;
+    while (i > 0 && cmp(cand, list[i - 1]) < 0) i--;
+    if (i >= maxResults) return;
+    list.splice(i, 0, cand);
+    if (list.length > maxResults) list.pop();
+  };
+
+  let iterations = 0;
+  let truncated = false;
+
+  const consider = () => {
+    if (pivot >= 0) {
+      const exact = solvePivot(values, pivot);
+      if (!Number.isFinite(exact)) return;
+      const z = Math.round(exact);
+      if (z < positions[pivot].min || z > positions[pivot].max) return;
+      values[pivot] = z;
+    }
+
+    const achieved = achieve(values);
+    if (!Number.isFinite(achieved)) return;
+    const error = Math.abs(ratio - achieved);
+    // les candidats de secours ne servent plus des qu'une solution dans la
+    // tolerance existe : inutile de payer `rate` pour eux
+    if (error > tol && withinTol.length > 0) return;
+
+    const verdict = rate(values);
+    if (!verdict) return;
+
+    const cand = {
+      teeth: values.slice(),
+      ratio: achieved,
+      error,
+      penalty: verdict.penalty ?? 0,
+      meta: verdict,
+      sum: values.reduce((a, b) => a + b, 0),
+    };
+    if (error <= tol) keepBest(withinTol, cand, byQuality);
+    else keepBest(closest, cand, byError);
+  };
+
+  const rec = (k) => {
+    if (k === sweep.length) {
+      if (++iterations > maxIterations) {
+        truncated = true;
+        return;
+      }
+      consider();
+      return;
+    }
+    const p = positions[sweep[k]];
+    for (let z = p.min; z <= p.max; z++) {
+      values[sweep[k]] = z;
+      rec(k + 1);
+      if (truncated) return;
+    }
+  };
+  rec(0);
 
   const exceedsTol = withinTol.length === 0 && closest.length > 0;
   return { results: exceedsTol ? closest : withinTol, truncated, exceedsTol };

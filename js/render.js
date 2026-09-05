@@ -283,18 +283,217 @@ function formatModule(m) {
   return String(parseFloat(m.toFixed(3)));
 }
 
+const CARRIER_COLOR = "#8a7b5c";
+const HAND_COLOR = "#1c3348";
+const HAND_HIGHLIGHT = "#c9cdd3";
+
+/**
+ * Aiguille indicatrice posee sur un mobile de sortie. Elle ne joue aucun
+ * role dans le calcul : elle rend seulement lisible la position angulaire
+ * de la sortie, et surtout sa VITESSE une fois l'animation lancee -- c'est
+ * la que l'on voit d'un coup d'oeil si le quantieme avance d'un cran par
+ * jour ou si la cage de tourbillon fait bien son tour par minute.
+ *
+ * Dessinee au repos vers le haut (midi), lame effilee et petit contrepoids,
+ * comme une aiguille de montre. Elle est placee DANS le groupe du mobile :
+ * la rotation de l'animation l'emporte donc sans calcul supplementaire.
+ */
+function handSVG(cxPx, cyPx, lengthPx) {
+  const L = Math.max(6, lengthPx);
+  const halfWidth = Math.max(1.1, L * 0.05);
+  const tail = L * 0.2;
+  const boss = Math.max(1.8, L * 0.07);
+  const f = (v) => v.toFixed(2);
+  const blade =
+    `M ${f(cxPx - halfWidth)} ${f(cyPx + tail)} ` +
+    `L ${f(cxPx - halfWidth * 0.45)} ${f(cyPx - L * 0.82)} ` +
+    `L ${f(cxPx)} ${f(cyPx - L)} ` +
+    `L ${f(cxPx + halfWidth * 0.45)} ${f(cyPx - L * 0.82)} ` +
+    `L ${f(cxPx + halfWidth)} ${f(cyPx + tail)} Z`;
+  return (
+    `<g class="hand">` +
+    `<path d="${blade}" fill="${HAND_COLOR}" fill-opacity="0.9" stroke="${HAND_COLOR}" stroke-width="0.6" stroke-linejoin="round"/>` +
+    `<circle cx="${f(cxPx)}" cy="${f(cyPx)}" r="${f(boss)}" fill="${HAND_COLOR}"/>` +
+    `<circle cx="${f(cxPx)}" cy="${f(cyPx)}" r="${f(boss * 0.4)}" fill="${HAND_HIGHLIGHT}"/>` +
+    `</g>`
+  );
+}
+
+const CAM_FOLLOWER_COLOR = "#9c3b34";
+
+/**
+ * Contour d'une came : le rayon suit le profil echantillonne, donc une
+ * simple polyligne fermee sur les 360 points. `phase` est l'orientation de
+ * la came, l'echantillon 0 tombant a cet angle.
+ */
+/**
+ * Calage angulaire du trace d'une came.
+ *
+ * Le profil est calcule dans le repere de la came, ou le pivot du palpeur
+ * est a `followerAngle`. Le placeur, lui, donne a l'ensemble une
+ * orientation quelconque. Sans recaler, la came serait dessinee de travers
+ * et le galet ne toucherait pas son profil -- alors que la geometrie, elle,
+ * est juste.
+ */
+function camDrawPlacement(cam, camPos, layout) {
+  if (cam.drives !== "porte-satellites" || !cam.carrierTarget || !layout) return { phase: 0, mirror: false };
+  const pivot = layout.positions.get(`${cam.carrierTarget}.porte_satellites`);
+  const satellite = layout.positions.get(`${cam.carrierTarget}.satellite_a`);
+  if (!pivot) return { phase: 0, mirror: false };
+  const alpha = Math.atan2(pivot.y - camPos.y, pivot.x - camPos.x);
+  const follower = (cam.followerAngle * Math.PI) / 180;
+
+  // Les trois entraxes laissent DEUX placements possibles, symetriques l'un
+  // de l'autre : le placeur en choisit un, et si c'est l'image inversee, le
+  // profil doit etre retourne pour que le galet retrouve son echantillon.
+  // Le signe du produit vectoriel (came->centre, came->satellite) le dit.
+  let mirror = false;
+  if (satellite) {
+    const cross = (pivot.x - camPos.x) * (satellite.y - camPos.y) - (pivot.y - camPos.y) * (satellite.x - camPos.x);
+    mirror = cross < 0;
+  }
+  return { phase: mirror ? alpha + follower : alpha - follower, mirror };
+}
+
+function camPath(cx, cy, cam, phase, toPx, mirror = false) {
+  // On trace le profil REELLEMENT USINE, deja calcule en coordonnees
+  // locales par la synthese : ses points ne sont pas repartis regulierement
+  // en angle, il n'y a donc rien a recalculer ici. `mirror` retourne le
+  // profil quand le placeur a retenu la solution symetrique.
+  const cut = cam.geometry?.cut;
+  const points = [];
+  if (cut) {
+    for (const [x, y] of cut) {
+      const my = mirror ? -y : y;
+      const rx = x * Math.cos(phase) - my * Math.sin(phase);
+      const ry = x * Math.sin(phase) + my * Math.cos(phase);
+      const [px, py] = toPx(cx + rx, cy + ry);
+      points.push(`${px.toFixed(2)} ${py.toFixed(2)}`);
+    }
+  } else {
+    const values = cam.samples.normalized;
+    const n = values.length;
+    const dir = cam.direction ?? 1;
+    for (let i = 0; i < n; i++) {
+      const a = phase - dir * (i / n) * TWO_PI;
+      const r = cam.baseRadius + cam.amplitude * values[i];
+      const [x, y] = toPx(cx + r * Math.cos(a), cy + r * Math.sin(a));
+      points.push(`${x.toFixed(2)} ${y.toFixed(2)}`);
+    }
+  }
+  return `M ${points.join(" L ")} Z`;
+}
+
+/**
+ * Palpeur : le bec qui lit la came. Fixe dans l'espace -- c'est la came qui
+ * defile devant lui -- il ne se deplace que radialement, et ce deplacement
+ * EST la grandeur affichee. Le galet et la valeur lue sont donc dans un
+ * groupe que l'animation translate ; le bras, lui, ne bouge pas.
+ */
+function camFollowerSVG(name, cx, cy, cam, toPx, scale) {
+  // Came qui pousse une cage : le bras palpeur EST le porte-satellites,
+  // deja dessine avec son train. On ne trace donc pas de levier ici, juste
+  // la valeur lue -- le galet est pose au bout de la cage.
+  if (cam.followerType === "angulaire" && cam.drives === "porte-satellites") {
+    const state = camLeverState(cam, 0);
+    const [tx, ty] = toPx(cx, cy - cam.baseRadius - cam.amplitude - 1.5);
+    const profile = CAM_PROFILES[cam.profileId];
+    const reading = state && profile ? profile.format(camValueAt(cam, state.index)) : "";
+    return (
+      `<text data-cam-readout="${name}" x="${tx.toFixed(2)}" y="${ty.toFixed(2)}" text-anchor="middle" ` +
+      `font-family="'IBM Plex Mono', monospace" font-size="11" font-weight="bold" fill="${CAM_FOLLOWER_COLOR}">${reading}</text>`
+    );
+  }
+  if (cam.followerType === "angulaire") return camLeverSVG(name, cx, cy, cam, toPx, scale);
+  const phi = (cam.followerAngle * Math.PI) / 180;
+  const dirX = Math.cos(phi);
+  const dirY = Math.sin(phi);
+  const idx = camSampleIndex(cam, 0);
+  const r0 = cam.baseRadius + cam.amplitude * cam.samples.normalized[idx];
+  const outer = cam.baseRadius + cam.amplitude + Math.max(2, 3 * cam.amplitude);
+
+  const [gx, gy] = toPx(cx + r0 * dirX, cy + r0 * dirY);
+  const [ax, ay] = toPx(cx + outer * dirX, cy + outer * dirY);
+  const roller = Math.max(2, 0.3 * scale);
+  const f = (v) => v.toFixed(2);
+  const profile = CAM_PROFILES[cam.profileId];
+  const reading = profile ? profile.format(camValueAt(cam, idx)) : "";
+
+  return (
+    `<g class="cam-follower">` +
+    `<line x1="${f(ax)}" y1="${f(ay)}" x2="${f(gx)}" y2="${f(gy)}" stroke="${CAM_FOLLOWER_COLOR}" stroke-width="1.3" stroke-dasharray="4,2" opacity="0.7"/>` +
+    `<circle cx="${f(ax)}" cy="${f(ay)}" r="${f(roller * 0.7)}" fill="none" stroke="${CAM_FOLLOWER_COLOR}" stroke-width="1.2"/>` +
+    `<g data-follower="${name}" data-dx="${f(dirX)}" data-dy="${f(dirY)}" data-r0="${r0.toFixed(4)}">` +
+    `<circle cx="${f(gx)}" cy="${f(gy)}" r="${f(roller)}" fill="${CAM_FOLLOWER_COLOR}" fill-opacity="0.85"/>` +
+    `</g>` +
+    `<text data-cam-readout="${name}" x="${f(ax)}" y="${f(ay - roller - 6)}" text-anchor="middle" ` +
+    `font-family="'IBM Plex Mono', monospace" font-size="11" font-weight="bold" fill="${CAM_FOLLOWER_COLOR}">${reading}</text>` +
+    `</g>`
+  );
+}
+
+/**
+ * Palpeur ANGULAIRE : le rateau d'equation. Un levier pivote en P, bec
+ * pose sur la came ; c'est son ANGLE qui sort, et non une course. Le bras
+ * pivote donc autour de P au lieu de coulisser, ce que l'animation
+ * traduit par une rotation et non une translation.
+ */
+function camLeverSVG(name, cx, cy, cam, toPx, scale) {
+  const state = camLeverState(cam, 0);
+  if (!state) {
+    // longueur de levier incompatible : on le dit sur le dessin plutot que
+    // de ne rien tracer
+    const [tx, ty] = toPx(cx, cy - cam.baseRadius - cam.amplitude - 2);
+    return (
+      `<text x="${tx.toFixed(2)}" y="${ty.toFixed(2)}" text-anchor="middle" font-family="'IBM Plex Mono', monospace" ` +
+      `font-size="10" fill="${CAM_FOLLOWER_COLOR}">levier trop court : le bec n'atteint pas la came</text>`
+    );
+  }
+
+  const [px, py] = toPx(cx + state.pivot.x, cy + state.pivot.y);
+  const [bx, by] = toPx(cx + state.bec.x, cy + state.bec.y);
+  const roller = Math.max(2, 0.3 * scale);
+  const f = (v) => v.toFixed(2);
+  const profile = CAM_PROFILES[cam.profileId];
+  const reading = profile ? profile.format(camValueAt(cam, state.index)) : "";
+  // queue du levier, au-dela du pivot : c'est elle qui porte le secteur
+  // dente dans un rateau reel
+  const tailLength = cam.leverLength * 0.45;
+  const back = (state.leverAngle * Math.PI) / 180 + Math.PI;
+  const [qx, qy] = toPx(cx + state.pivot.x + tailLength * Math.cos(back), cy + state.pivot.y + tailLength * Math.sin(back));
+
+  return (
+    `<g class="cam-lever">` +
+    `<g data-lever="${name}" data-px="${f(px)}" data-py="${f(py)}" data-a0="${state.leverAngle.toFixed(4)}">` +
+    `<line x1="${f(px)}" y1="${f(py)}" x2="${f(bx)}" y2="${f(by)}" stroke="${CAM_FOLLOWER_COLOR}" stroke-width="2" stroke-linecap="round" opacity="0.85"/>` +
+    `<line x1="${f(px)}" y1="${f(py)}" x2="${f(qx)}" y2="${f(qy)}" stroke="${CAM_FOLLOWER_COLOR}" stroke-width="3" stroke-linecap="round" opacity="0.5"/>` +
+    `<circle cx="${f(bx)}" cy="${f(by)}" r="${f(roller)}" fill="${CAM_FOLLOWER_COLOR}" fill-opacity="0.85"/>` +
+    `</g>` +
+    // le pivot, lui, ne bouge pas
+    `<circle cx="${f(px)}" cy="${f(py)}" r="${f(roller * 0.9)}" fill="none" stroke="${CAM_FOLLOWER_COLOR}" stroke-width="1.6"/>` +
+    `<circle cx="${f(px)}" cy="${f(py)}" r="${f(roller * 0.3)}" fill="${CAM_FOLLOWER_COLOR}"/>` +
+    `<text data-cam-readout="${name}" x="${f(px)}" y="${f(py - roller - 7)}" text-anchor="middle" ` +
+    `font-family="'IBM Plex Mono', monospace" font-size="11" font-weight="bold" fill="${CAM_FOLLOWER_COLOR}">${reading}</text>` +
+    `</g>`
+  );
+}
+
 /**
  * options :
  *   marks        : Map nom -> { tag, color }   (etiquettes ENTREE / SORTIE par complication)
  *   senses       : Map nom -> +1 | -1          (sens de rotation vu de dessus)
  *   styles       : Map nom -> "dim" | "hidden" (complications repliees)
  *   fixedMarkers : [{ name, x, y }]            (positions imposees par clic, en mm)
+ *   arborRadius  : rayon d'arbre en mm
  */
 function renderTrainSVG(train, layout, plateRadius, plateCenter = { x: 0, y: 0 }, scale = 20, margin = 2, options = {}) {
   const marks = options.marks ?? new Map();
   const senses = options.senses ?? new Map();
   const styles = options.styles ?? new Map();
   const fixedMarkers = options.fixedMarkers ?? [];
+  const arborRadius = options.arborRadius ?? 0;
+  const hands = options.hands ?? new Map(); // nom -> { lengthMm }
+  const carrierRollers = options.carrierRollers ?? new Map(); // cage -> rayon de galet, mm
   const DIM_COLOR = "#a09a8e";
   const sizePx = (plateRadius + margin) * 2 * scale;
   const cxPx = (plateRadius + margin) * scale;
@@ -327,6 +526,26 @@ function renderTrainSVG(train, layout, plateRadius, plateCenter = { x: 0, y: 0 }
 
   const labelStack = new Map(); // cle position -> nb de labels deja poses a cet endroit
 
+  // palpeurs a poser une fois les cames dessinees (ils passent au-dessus)
+  const camFollowers = [];
+
+  // mobiles emportes par une cage : nom du porte-satellites et centre de
+  // l'orbite, en pixels
+  const orbitOf = new Map();
+  if (layout) {
+    for (const block of train.epicyclicBlocks ?? []) {
+      const centre = layout.positions.get(block.carrier);
+      if (!centre) continue;
+      const [ocx, ocy] = toPx(centre.x, centre.y);
+      for (const step of block.meshes) {
+        for (const name of [step.from, step.to]) {
+          if (name === block.planetA || name === block.planetB || name === block.carrier) continue;
+          orbitOf.set(name, { carrier: block.carrier, cx: ocx, cy: ocy });
+        }
+      }
+    }
+  }
+
   if (layout) {
     const phases = computeToothPhases(train, layout, options.rootWheel);
     // les mobiles estompes sont dessines en premier (dessous)
@@ -338,6 +557,52 @@ function renderTrainSVG(train, layout, plateRadius, plateCenter = { x: 0, y: 0 }
       const wheel = train.wheels.get(name);
       const color = dim ? DIM_COLOR : colorOfGroup.get(wheel.axisGroup);
       const [wx, wy] = toPx(pos.x, pos.y);
+
+      // Pseudo-mobiles d'un train epicycloidal : la cage n'a pas de
+      // denture (elle est dessinee comme un bras vers le satellite) et
+      // l'enveloppe n'est que le disque balaye par ce satellite.
+      if (wheel.envelope) {
+        if (!dim) {
+          parts.push(
+            `<circle cx="${wx.toFixed(2)}" cy="${wy.toFixed(2)}" r="${(wheel.sweep * scale).toFixed(
+              2
+            )}" fill="none" stroke="${color}" stroke-width="0.8" stroke-dasharray="1,4" opacity="0.55"/>`
+          );
+        }
+        continue;
+      }
+      if (wheel.carrier) continue;
+
+      // Came : pas de denture, un contour a rayon variable. Le cercle de
+      // base en pointille donne la reference de lecture, la course du
+      // palpeur etant l'ecart a ce cercle.
+      if (wheel.cam) {
+        parts.push(
+          `<circle cx="${wx.toFixed(2)}" cy="${wy.toFixed(2)}" r="${(wheel.cam.baseRadius * scale).toFixed(
+            2
+          )}" fill="none" stroke="${color}" stroke-width="0.7" stroke-dasharray="3,3" opacity="0.5"/>`
+        );
+        parts.push(
+          `<g data-wheel="${name}" data-cx="${wx.toFixed(2)}" data-cy="${wy.toFixed(2)}">` +
+            `<path d="${(() => {
+              const p = camDrawPlacement(wheel.cam, pos, layout);
+              return camPath(pos.x, pos.y, wheel.cam, p.phase, toPx, p.mirror);
+            })()}" fill="${color}" fill-opacity="${
+              dim ? 0.08 : 0.2
+            }" stroke="${color}" stroke-width="${dim ? 0.8 : 1.3}" stroke-linejoin="round"/>` +
+            `</g>`
+        );
+        if (!dim) {
+          camFollowers.push({ name, cx: pos.x, cy: pos.y, cam: wheel.cam });
+          const label = CAM_PROFILES[wheel.cam.profileId]?.label ?? "came";
+          parts.push(
+            `<text x="${(wx + 4).toFixed(2)}" y="${(wy - 4).toFixed(
+              2
+            )}" font-family="'IBM Plex Mono', monospace" font-size="10" fill="#21252b">${name} — ${label}</text>`
+          );
+        }
+        continue;
+      }
 
       // cercle primitif
       if (!dim) {
@@ -353,14 +618,26 @@ function renderTrainSVG(train, layout, plateRadius, plateCenter = { x: 0, y: 0 }
       // pour que le mode animation n'ait qu'un attribut transform a poser
       // au lieu de recalculer la geometrie a chaque image.
       const d = gearPath(pos.x, pos.y, wheel, phases.get(name) ?? 0, toPx);
+      // Un satellite ne tourne pas seulement sur lui-meme : il est EMPORTE
+      // par la cage autour de l'axe central. L'animation a donc besoin de
+      // savoir autour de quoi il orbite et a quelle vitesse.
+      const orbit = orbitOf.get(name);
+      const orbitAttrs = orbit
+        ? ` data-orbit="${orbit.carrier}" data-ocx="${orbit.cx.toFixed(2)}" data-ocy="${orbit.cy.toFixed(2)}"`
+        : "";
+      // l'aiguille vit DANS le groupe du mobile : elle suit sa rotation
+      const hand = hands.get(name);
       parts.push(
-        `<g data-wheel="${name}" data-cx="${wx.toFixed(2)}" data-cy="${wy.toFixed(2)}">` +
+        `<g data-wheel="${name}" data-cx="${wx.toFixed(2)}" data-cy="${wy.toFixed(2)}"${orbitAttrs}>` +
           `<path d="${d}" fill="${color}" fill-rule="evenodd" fill-opacity="${dim ? 0.07 : 0.15}" stroke="${color}" stroke-width="${dim ? 0.8 : 1.1}" stroke-opacity="${dim ? 0.45 : 1}" stroke-linejoin="round"/>` +
+          (hand && !dim ? handSVG(wx, wy, hand.lengthMm * scale) : "") +
           `</g>`
       );
 
-      // centre
-      parts.push(`<circle cx="${wx.toFixed(2)}" cy="${wy.toFixed(2)}" r="2" fill="${color}" opacity="${dim ? 0.5 : 1}"/>`);
+      // arbre, dessine a sa vraie section (un minimum de 2 px le garde
+      // visible quand on dezoome)
+      const arborPx = Math.max(2, arborRadius * scale);
+      parts.push(`<circle cx="${wx.toFixed(2)}" cy="${wy.toFixed(2)}" r="${arborPx.toFixed(2)}" fill="${color}" opacity="${dim ? 0.5 : 1}"/>`);
 
       // sens de rotation
       const sens = senses.get(name);
@@ -399,6 +676,85 @@ function renderTrainSVG(train, layout, plateRadius, plateCenter = { x: 0, y: 0 }
       );
     }
   }
+
+  // Cages de trains epicycloidaux : un bras de l'axe central vers l'axe du
+  // satellite qu'elles portent. Dessine au-dessus des rouages, comme la
+  // piece reelle.
+  if (layout) {
+    for (const block of train.epicyclicBlocks ?? []) {
+      const centre = layout.positions.get(block.carrier);
+      const satellite = block.meshes[0] && layout.positions.get(block.meshes[0].to);
+      if (!centre || !satellite) continue;
+      if (styles.get(block.planetA) === "hidden") continue;
+      const [cx, cy] = toPx(centre.x, centre.y);
+      const [sx, sy] = toPx(satellite.x, satellite.y);
+      // Dessinee en clair et en transparence : la cage passe sous les
+      // mobiles, il ne faut pas qu'elle masque le planetaire central.
+      const hub = Math.max(3, arborRadius * 1.5 * scale);
+      const arm = Math.max(2.5, arborRadius * 1.2 * scale);
+      parts.push(
+        `<g class="carrier" data-carrier="${block.carrier}" data-cx="${cx.toFixed(2)}" data-cy="${cy.toFixed(2)}">` +
+          `<line x1="${cx.toFixed(2)}" y1="${cy.toFixed(2)}" x2="${sx.toFixed(2)}" y2="${sy.toFixed(
+            2
+          )}" stroke="${CARRIER_COLOR}" stroke-width="${arm.toFixed(2)}" stroke-linecap="round" opacity="0.4"/>` +
+          `<line x1="${cx.toFixed(2)}" y1="${cy.toFixed(2)}" x2="${sx.toFixed(2)}" y2="${sy.toFixed(
+            2
+          )}" stroke="${CARRIER_COLOR}" stroke-width="0.8" opacity="0.9"/>` +
+          `<circle cx="${cx.toFixed(2)}" cy="${cy.toFixed(2)}" r="${hub.toFixed(
+            2
+          )}" fill="none" stroke="${CARRIER_COLOR}" stroke-width="1.1"/>` +
+          `<circle cx="${sx.toFixed(2)}" cy="${sy.toFixed(2)}" r="${(arm * 0.6).toFixed(
+            2
+          )}" fill="none" stroke="${CARRIER_COLOR}" stroke-width="1.1"/>` +
+          // Une cage peut etre la sortie -- c'est le cas du differentiel de
+          // reserve de marche, dont l'aiguille est commandee par elle. Son
+          // aiguille vit donc dans ce groupe, qui porte la rotation.
+          (hands.has(block.carrier) ? handSVG(cx, cy, hands.get(block.carrier).lengthMm * scale) : "") +
+          // Prolongement palpeur : la cage ne s'arrete pas au satellite,
+          // elle continue jusqu'au galet qui suit la came. Le tout vit dans
+          // ce groupe, donc l'animation l'emporte sans traitement a part.
+          (() => {
+            const roller = carrierRollers.get(block.carrier);
+            if (!roller) return "";
+            const armPx = roller.armLength * scale;
+            const span = Math.hypot(sx - cx, sy - cy) || 1;
+            const ex = cx + ((sx - cx) / span) * armPx;
+            const ey = cy + ((sy - cy) / span) * armPx;
+            const rPx = Math.max(2, roller.radius * scale);
+            return (
+              `<line x1="${sx.toFixed(2)}" y1="${sy.toFixed(2)}" x2="${ex.toFixed(2)}" y2="${ey.toFixed(
+                2
+              )}" stroke="${CARRIER_COLOR}" stroke-width="${(arm * 0.75).toFixed(2)}" stroke-linecap="round" opacity="0.4"/>` +
+              `<line x1="${sx.toFixed(2)}" y1="${sy.toFixed(2)}" x2="${ex.toFixed(2)}" y2="${ey.toFixed(
+                2
+              )}" stroke="${CARRIER_COLOR}" stroke-width="0.8" opacity="0.9"/>` +
+              `<circle cx="${ex.toFixed(2)}" cy="${ey.toFixed(2)}" r="${rPx.toFixed(
+                2
+              )}" fill="${CAM_FOLLOWER_COLOR}" fill-opacity="0.85" stroke="${CAM_FOLLOWER_COLOR}" stroke-width="1"/>`
+            );
+          })() +
+          `</g>`
+      );
+
+      // le marqueur de sortie ne peut pas etre pose dans la boucle des
+      // mobiles : la cage n'y est pas dessinee
+      const carrierMark = marks.get(block.carrier);
+      if (carrierMark) {
+        const ringR = Math.max(8, arborRadius * 3 * scale);
+        parts.push(
+          `<circle cx="${cx.toFixed(2)}" cy="${cy.toFixed(2)}" r="${ringR.toFixed(
+            2
+          )}" fill="none" stroke="${carrierMark.color}" stroke-width="1.5" stroke-dasharray="2,3"/>` +
+            `<text x="${cx.toFixed(2)}" y="${(cy + ringR + 12).toFixed(
+              2
+            )}" text-anchor="middle" font-family="'IBM Plex Mono', monospace" font-size="10" font-weight="bold" fill="${carrierMark.color}">${carrierMark.tag}</text>`
+        );
+      }
+    }
+  }
+
+  // palpeurs : au-dessus des cames qu'ils lisent
+  for (const f of camFollowers) parts.push(camFollowerSVG(f.name, f.cx, f.cy, f.cam, toPx, scale));
 
   // positions imposees par clic (visibles meme sans placement)
   for (const marker of fixedMarkers) {
