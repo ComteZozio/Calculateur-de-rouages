@@ -37,6 +37,9 @@
       </p>
     </section>
 
+    <!-- rempli par js/perpetual-ui.js -->
+    <section class="panel" id="panel-perpetual"></section>
+
     <div id="complications"></div>
     <button id="btn-add-complication" type="button" class="secondary">+ Ajouter une complication</button>
     <p class="empty-note">
@@ -158,6 +161,11 @@
     <p class="empty-note" id="placing-hint" hidden></p>
 
     <div class="canvas-tools">
+      <select id="view-mode" title="Ce que montre la zone de dessin">
+        <option value="rouage" selected>Rouage</option>
+        <option value="perpetuel">Quantième perpétuel</option>
+      </select>
+      <span class="tool-sep"></span>
       <button type="button" class="link-btn" id="btn-zoom-out" title="Dézoomer">−</button>
       <span class="zoom-value" id="zoom-value">20 px/mm</span>
       <button type="button" class="link-btn" id="btn-zoom-in" title="Zoomer">+</button>
@@ -214,7 +222,19 @@
   un engrènement <code>intérieur</code> (couronne annulaire, colonne « Int. ») ne l'inverse pas, rapproche les axes
   — l'entraxe devient la différence des rayons — et laisse son centre libre pour y loger d'autres mobiles.
   La cible se donne au choix en ratio direct ou en vitesses (tours par minute / heure / jour, ou durée d'un tour),
-  et la bibliothèque charge les complications classiques. Les mobiles sont répartis automatiquement sur le nombre de niveaux choisi. Denture dessinée en approximation
+  et la bibliothèque charge les complications classiques.
+  Le <code>quantième perpétuel</code> (vue « Quantième perpétuel ») est un mécanisme à sauts et non un rouage : la roue
+  de 24 h arme deux bascules qui avancent le quantième et le jour d'une dent chaque soir, et un grand levier dont le bec
+  lit la came programme de 48 mois ; son cliquet ne rencontre la goupille de fin de mois que le dernier jour d'un mois
+  court, et la ramène au 1. Pivots, bras et cames sont recalculés pour les positions d'affichage choisies, et le
+  mécanisme est vérifié jour par jour contre le calendrier grégorien — jusqu'au 1er mars 2100, qu'il prendra pour un
+  29 février, comme tout quantième perpétuel à cycle de quatre ans. Deux constructions au choix : celle de
+  <em>pendule</em>, à bascules séparées, et celle de <em>montre</em>, où une grande bascule unique, levée par un
+  seul limaçon, porte le cliquet de quantième, le cliquet des jours et le crochet de fin de mois : le repos que lui
+  donne le cran du mois est calé pour que le crochet ne se trouve derrière la goupille que le dernier jour du mois. Au
+  passage du 31 au 1, un doigt de la roue de quantième fait avancer l'étoile des mois quand leurs affichages sont
+  voisins ; il l'attaque du côté du quantième, sans pouvoir passer l'arbre de l'aiguille des mois, si bien que les mois
+  tournent à rebours. Les mobiles sont répartis automatiquement sur le nombre de niveaux choisi. Denture dessinée en approximation
   simplifiée (pas un profil développante réel).
 </footer>
 
@@ -223,6 +243,11 @@
 <script src="js/ratio-search.js"></script>
 <script src="js/complication.js"></script>
 <script src="js/render.js"></script>
+<script src="js/perpetual-calendar.js"></script>
+<script src="js/perpetual-synthesis.js"></script>
+<script src="js/perpetual-kinematics.js"></script>
+<script src="js/perpetual-render.js"></script>
 <script src="js/main.js"></script>
+<script src="js/perpetual-ui.js"></script>
 </body>
 </html>
