@@ -644,3 +644,57 @@ td.module-split {
 .canvas-tools .tool-check input {
   margin: 0;
 }
+
+/* ------------------------------------------------------------------ */
+/* Quantieme perpetuel                                                 */
+/* ------------------------------------------------------------------ */
+.canvas-tools #view-mode {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  padding: 0.15rem 0.3rem;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  background: #fdfcf8;
+  color: var(--ink);
+}
+
+.perp-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.8rem;
+  margin: 0.5rem 0;
+}
+
+.perp-controls button {
+  width: auto;
+  margin: 0;
+  padding: 0.35rem 0.7rem;
+}
+
+.perp-controls .tool-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--ink-soft);
+}
+
+.perp-controls .perp-speed {
+  width: 4rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  padding: 0.15rem 0.3rem;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+}
+
+#panel-perpetual .perp-hour {
+  padding: 0;
+}
+
+#panel-perpetual .perp-readout {
+  font-style: normal;
+  color: var(--ink);
+}
