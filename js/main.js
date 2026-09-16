@@ -910,6 +910,7 @@ function snapPoint(x, y, exclude) {
 }
 
 function onDrawingClick(e) {
+  if (perpHandleDrawingClick(e)) return;
   if (!state.placing) return;
   const svg = document.querySelector("#drawing-area svg");
   if (!svg) return;
@@ -1893,13 +1894,20 @@ function schedulePlacement() {
 function redrawOnly() {
   const last = state.lastRender;
   const scale = viewScale();
-  const plateRadius = last ? last.plateRadius : state.lastPlateRadius;
+  // la vue cadrature (quantieme perpetuel) partage le zoom et les regles
+  const perpetual = perpViewActive();
+  const plateRadius = perpetual ? perpPlateRadius() : last ? last.plateRadius : state.lastPlateRadius;
   const sideLengthMm = (plateRadius + MARGIN) * 2;
 
   document.getElementById("ruler-top").innerHTML = buildRulerSVG(sideLengthMm, scale, "horizontal");
   document.getElementById("ruler-left").innerHTML = buildRulerSVG(sideLengthMm, scale, "vertical");
   const zoomLabel = document.getElementById("zoom-value");
   if (zoomLabel) zoomLabel.textContent = `${scale < 10 ? scale.toFixed(1) : scale.toFixed(0)} px/mm`;
+
+  if (perpetual) {
+    perpDraw();
+    return;
+  }
 
   document.getElementById("drawing-area").innerHTML = renderTrainSVG(
     last ? last.train : new GearTrain(),
@@ -1949,7 +1957,7 @@ function zoomTo(next, clientX, clientY) {
 /** Echelle qui fait tenir toute la platine dans la zone visible. */
 function zoomToFit() {
   const frame = document.querySelector(".ruled-frame");
-  const plateRadius = state.lastRender ? state.lastRender.plateRadius : state.lastPlateRadius;
+  const plateRadius = perpViewActive() ? perpPlateRadius() : state.lastRender ? state.lastRender.plateRadius : state.lastPlateRadius;
   const sideMm = (plateRadius + MARGIN) * 2;
   if (!(sideMm > 0)) return;
   const rulerW = document.getElementById("ruler-left").offsetWidth || 22;
@@ -2035,6 +2043,10 @@ function animationSpeed() {
 function updateAnimScale() {
   const el = document.getElementById("anim-scale");
   if (!el) return;
+  if (perpViewActive()) {
+    el.textContent = `1 s ≈ ${perpState.speed} j`;
+    return;
+  }
   const maxAbs = maxAbsVelocity();
   if (!maxAbs || !state.lastRender) {
     el.textContent = "—";
@@ -2147,6 +2159,7 @@ function stopAnimation() {
 }
 
 function toggleAnimation() {
+  if (perpViewActive()) return perpToggleAnimation();
   if (state.animation.raf) return stopAnimation();
   document.getElementById("btn-animate").textContent = "■ arrêter";
   // l'angle se deduit du temps ECOULE, jamais cumule image par image : un
@@ -2192,7 +2205,7 @@ function setupCanvasView() {
   // clic sert justement a poser une position imposee
   let drag = null;
   frame.addEventListener("pointerdown", (e) => {
-    if (state.placing || e.button !== 0) return;
+    if (state.placing || perpState.placing || e.button !== 0) return;
     drag = { x: e.clientX, y: e.clientY, sl: frame.scrollLeft, st: frame.scrollTop };
     frame.setPointerCapture(e.pointerId);
     frame.classList.add("panning");
