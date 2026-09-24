@@ -324,6 +324,43 @@ function perpSautoirAngle(center, star, sautoir, position) {
   return perpAngleDiff(perpAngleTo(sautoir.pivot, now), perpAngleTo(sautoir.pivot, rest));
 }
 
+/**
+ * Satellite de la came de 12 mois, dans le repere de la came a sa pose de
+ * reference (annee 0 du cycle). Deux etages sur le meme arbre : les LOBES,
+ * que lit le bec du grand levier, et l'ETOILE D'ENTRAINEMENT a fentes, ou
+ * entre le doigt fixe une fois par tour (en pointille : elle est a l'etage
+ * du doigt). Le groupe tourne autour de son propre centre, a l'interieur du
+ * groupe de la came.
+ */
+function perpSatelliteSVG(model, toPx, scale) {
+  const sat = model.satellite;
+  const k = model.dim.k;
+  const sense = model.monthSense ?? 1;
+  const n = sat.positions;
+  const step = (2 * Math.PI) / n;
+  const S = sat.S;
+  const pts = [];
+  for (let j = 0; j < n; j++) {
+    const a = sat.out + sense * j * step;
+    const half = Math.min(0.3 * step, (0.07 * k) / sat.lobes[j]);
+    pts.push(perpPolar(S, sat.hub, a - sense * step / 2));
+    pts.push(perpPolar(S, sat.lobes[j], a - half));
+    pts.push(perpPolar(S, sat.lobes[j], a + half));
+  }
+  const color = PERP_COLORS.program;
+  let drive = "";
+  for (let j = 0; j < n; j++) {
+    const a = sat.entry + j * step;
+    // trait fin : trente fentes sur un demi-millimetre se confondraient
+    drive += perpLine(perpPolar(S, 0.3 * sat.drive, a), perpPolar(S, sat.drive, a), Math.max(0.6, Math.min(0.03 * k * scale, (0.25 * sat.drive * step * scale) / 2)), PERP_COLORS.pin, toPx, 0.55);
+  }
+  const content =
+    `<path d="${perpPathFromPoints(pts, toPx)}" fill="${color}" fill-opacity="0.35" stroke="${color}" stroke-width="1" stroke-linejoin="round"/>` +
+    drive +
+    perpCircle(S, Math.max(1.5, 0.12 * k * scale), toPx, `fill="${PERP_COLORS.ink}" opacity="0.7"`);
+  return perpRotGroup("satellite", 0, S, toPx, content);
+}
+
 // ------------------------------------------------------------------
 // Cadran
 // ------------------------------------------------------------------
@@ -356,19 +393,29 @@ function renderPerpetualSVG(model, options) {
 
   parts.push(perpCircle(O, plateRadius * scale, toPx, `fill="none" stroke="${PERP_COLORS.plate}" stroke-width="1.5" stroke-dasharray="6,4"`));
 
-  // roue programme et sa came (au-dessous de l'etoile des mois)
-  const programWheel = new Wheel("programme", dim.program.teeth, dim.program.module, "G");
-  parts.push(
-    perpRotGroup(
-      "program",
-      0,
-      G,
-      toPx,
-      `<path d="${gearPath(G.x, G.y, programWheel, model.phases.program, toPx)}" fill="${PERP_COLORS.program}" fill-opacity="0.1" stroke="${PERP_COLORS.program}" stroke-width="0.9"/>` +
-        `<path d="${perpLocalPath(G, perpProgramCamProfile(model), toPx)}" fill="${PERP_COLORS.cam}" fill-opacity="0.3" stroke="${PERP_COLORS.cam}" stroke-width="1.2" stroke-linejoin="round"/>` +
-        (options.showDial ? handSVG(...toPx(G.x, G.y), 1.6 * k * scale) : "")
-    )
-  );
+  const sat = model.satellite;
+  const camPath = `<path d="${perpLocalPath(G, perpProgramCamProfile(model), toPx)}" fill="${PERP_COLORS.cam}" fill-opacity="0.3" stroke="${PERP_COLORS.cam}" stroke-width="1.2" stroke-linejoin="round"/>`;
+  if (sat) {
+    // came de 12 mois sur l'arbre des mois, et son satellite qui tourne avec
+    // elle ; le doigt fixe qui le fait avancer est pose sur la platine
+    parts.push(perpRotGroup("program", 0, M, toPx, camPath + perpSatelliteSVG(model, toPx, scale)));
+    const finger = perpPolar(M, sat.rho, sat.fingerAngle);
+    parts.push(perpCircle(finger, Math.max(2, 0.14 * k * scale), toPx, `fill="${PERP_COLORS.pin}" stroke="${PERP_COLORS.ink}" stroke-width="0.6"`));
+  } else {
+    // roue programme et sa came (au-dessous de l'etoile des mois)
+    const programWheel = new Wheel("programme", dim.program.teeth, dim.program.module, "G");
+    parts.push(
+      perpRotGroup(
+        "program",
+        0,
+        G,
+        toPx,
+        `<path d="${gearPath(G.x, G.y, programWheel, model.phases.program, toPx)}" fill="${PERP_COLORS.program}" fill-opacity="0.1" stroke="${PERP_COLORS.program}" stroke-width="0.9"/>` +
+          camPath +
+          (options.showDial ? handSVG(...toPx(G.x, G.y), 1.6 * k * scale) : "")
+      )
+    );
+  }
 
   // roue des heures et roue de 24 h avec ses cames (trois pour la pendule,
   // le seul limacon pour la montre)
@@ -429,7 +476,7 @@ function renderPerpetualSVG(model, options) {
       0,
       M,
       toPx,
-      `<path d="${gearPath(M.x, M.y, pinion, model.phases.pinion, toPx)}" fill="none" stroke="${PERP_COLORS.program}" stroke-width="0.8" stroke-dasharray="2,2"/>` +
+      (sat ? "" : `<path d="${gearPath(M.x, M.y, pinion, model.phases.pinion, toPx)}" fill="none" stroke="${PERP_COLORS.program}" stroke-width="0.8" stroke-dasharray="2,2"/>`) +
         `<path d="${perpStarPath(M, dim.month, model.sautoirs.month.sigma, toPx)}" fill="${PERP_COLORS.star}" fill-opacity="0.16" stroke="${PERP_COLORS.star}" stroke-width="1.1" stroke-linejoin="round"/>`
     )
   );
@@ -449,20 +496,22 @@ function renderPerpetualSVG(model, options) {
   // cadran et aiguilles
   if (options.showDial) {
     const top = -Math.PI / 2;
-    parts.push(perpSubdialSVG(D, dim.date.tip + 1.1 * k, Array.from({ length: 31 }, (_, i) => i + 1), (i) => top + i * dim.date.pitch, toPx, scale, k));
+    parts.push(perpSubdialSVG(D, dim.date.tip + 1.1 * k, Array.from({ length: dim.date.teeth }, (_, i) => i + 1), (i) => top + i * dim.date.pitch, toPx, scale, k));
     parts.push(perpSubdialSVG(W, dim.day.tip + 1.2 * k, PERP_DAY_LABELS, (i) => top + i * dim.day.pitch, toPx, scale, k));
     // cadran des mois gradue a rebours quand l'etoile tourne a rebours
     const monthSense = model.monthSense ?? 1;
-    parts.push(perpSubdialSVG(M, dim.month.tip + 1.2 * k, PERP_MONTH_LABELS, (i) => top + monthSense * i * dim.month.pitch, toPx, scale, k));
-    // petit cadran du cycle bissextile, assez etroit pour laisser voir la
-    // came programme qui tourne sous lui
-    parts.push(perpSubdialSVG(G, 0.6 * k, ["B", "1", "2", "3"], (i) => top - (monthSense * i * Math.PI) / 2, toPx, scale, 0.5 * k));
-    for (const [key, c, len] of [
+    parts.push(perpSubdialSVG(M, dim.month.tip + 1.2 * k, model.cal.monthLabels, (i) => top + monthSense * i * dim.month.pitch, toPx, scale, k));
+    // came de 48 mois : petit cadran du cycle bissextile, assez etroit pour
+    // laisser voir la came qui tourne sous lui. Sur une came de 12 mois,
+    // c'est le satellite lui-meme qui montre l'annee du cycle.
+    if (!sat) parts.push(perpSubdialSVG(G, 0.6 * k, ["B", "1", "2", "3"], (i) => top - (monthSense * i * Math.PI) / 2, toPx, scale, 0.5 * k));
+    const hands = [
       ["date", D, dim.date.tip + 0.5 * k],
       ["day", W, dim.day.tip + 0.6 * k],
       ["month", M, dim.month.tip + 0.6 * k],
-      ["program", G, 0.5 * k],
-    ]) {
+    ];
+    if (!sat) hands.push(["program", G, 0.5 * k]);
+    for (const [key, c, len] of hands) {
       const [hx, hy] = toPx(c.x, c.y);
       parts.push(perpRotGroup(key, 0, c, toPx, handSVG(hx, hy, len * scale)));
     }
@@ -475,7 +524,8 @@ function renderPerpetualSVG(model, options) {
     const away = H.y <= 0 ? -1 : 1;
     const labelY = H.y + away * (perpTipRadius(dim.wheel24) + (away < 0 ? 0.4 : 1.0) * k);
     parts.push(perpLabel({ x: H.x, y: labelY }, "roue de 24 h", toPx, size, PERP_COLORS.wheel, "middle"));
-    parts.push(perpLabel({ x: G.x, y: G.y + perpTipRadius(dim.program) + 0.9 * k }, "came programme 48 mois", toPx, size, PERP_COLORS.program, "middle"));
+    const camLabel = sat ? `came de 12 mois · ${sat.positions === 4 ? "croix bissextile" : "came de 30 ans"}` : "came programme 48 mois";
+    parts.push(perpLabel({ x: G.x, y: G.y + perpProgramRadius(dim) + 0.9 * k }, camLabel, toPx, size, PERP_COLORS.program, "middle"));
   }
 
   parts.push("</svg>");

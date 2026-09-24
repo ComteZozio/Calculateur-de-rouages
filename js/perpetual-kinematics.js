@@ -6,7 +6,7 @@
  * Deux niveaux de lecture qui doivent dire la meme chose :
  *   - la LOGIQUE d'une nuit (perpNightStep), qui ne manipule que les
  *     seuils relus sur les cames usinees -- c'est elle que l'on confronte
- *     au calendrier gregorien sur plus d'un siecle ;
+ *     au calendrier (gregorien ou hegirien) sur plus d'un siecle ;
  *   - la POSE a un instant donne (perpPoseAt), qui donne l'angle de chaque
  *     piece pour le dessin et l'animation, et retombe exactement sur l'etat
  *     de la logique a minuit.
@@ -29,15 +29,15 @@
 function perpNightStep(state, th) {
   const pB = state.p + 1;
   let k = state.k;
-  if (state.p < th.monthHalf && pB >= th.monthHalf) k = (k + 1) % PERP_PROGRAM_TEETH;
+  if (state.p < th.monthHalf && pB >= th.monthHalf) k = (k + 1) % th.cycleMonths;
 
   let reach = pB;
   if (pB > th.restP[k] && pB <= th.topP + 1e-9) {
-    if (pB < th.monthHalf && th.topP >= th.monthHalf) k = (k + 1) % PERP_PROGRAM_TEETH;
+    if (pB < th.monthHalf && th.topP >= th.monthHalf) k = (k + 1) % th.cycleMonths;
     reach = Math.max(pB, th.topP);
   }
   let p = Math.round(reach);
-  if (p >= 32) p -= 31;
+  if (p > th.N) p -= th.N;
   return { p, w: (state.w + 1) % PERP_DAY_TEETH, k };
 }
 
@@ -53,9 +53,9 @@ function perpNightStep(state, th) {
 function perpWatchNightStep(state, th) {
   const caught = state.p > th.restP[state.k] + 1e-9;
   const reach = caught ? Math.max(state.p + 1, th.topP) : state.p + 1;
-  const k = state.p < th.monthHalf && reach >= th.monthHalf ? (state.k + 1) % PERP_PROGRAM_TEETH : state.k;
+  const k = state.p < th.monthHalf && reach >= th.monthHalf ? (state.k + 1) % th.cycleMonths : state.k;
   let p = Math.round(reach);
-  if (p >= 32) p -= 31;
+  if (p > th.N) p -= th.N;
   return { p, w: (state.w + 1) % PERP_DAY_TEETH, k };
 }
 
@@ -68,9 +68,9 @@ function perpNightStepFor(model) {
  * pas reculer : on ne remonte pas avant le reglage.
  */
 function createPerpetualTimeline(model, startCivil) {
-  const states = [perpStateFromCivil(startCivil)];
-  const step = perpNightStepFor(model);
   const startDay = perpDayNumber(startCivil.y, startCivil.m, startCivil.d);
+  const states = [perpStateFromDay(model.cal, startDay)];
+  const step = perpNightStepFor(model);
   return {
     model,
     startCivil,
@@ -143,7 +143,7 @@ function perpPoseAt(timeline, t) {
   const xD = perpBasculeProgress(dateDrive, h);
   const xW = perpBasculeProgress(dayDrive, h);
   const pB = s.p + 1;
-  const kAfterStep = s.p < th.monthHalf && pB >= th.monthHalf ? (s.k + 1) % PERP_PROGRAM_TEETH : s.k;
+  const kAfterStep = s.p < th.monthHalf && pB >= th.monthHalf ? (s.k + 1) % th.cycleMonths : s.k;
   const caught = pB > th.restP[kAfterStep] && pB <= th.topP + 1e-9;
   const snail = perpSnailP(th, h);
 
@@ -157,7 +157,7 @@ function perpPoseAt(timeline, t) {
   const xm = perpMonthProgress(model, p);
   const kc = s.k + xm;
   // la came programme tourne sous le bec : le repos glisse d'un cran a l'autre
-  const rest = perpMix(th.restP[s.k], th.restP[(s.k + 1) % PERP_PROGRAM_TEETH], perpEase(xm));
+  const rest = perpMix(th.restP[s.k], th.restP[(s.k + 1) % th.cycleMonths], perpEase(xm));
   const leverP = Math.max(rest, snail);
   const wc = s.w + xW;
 
@@ -196,7 +196,7 @@ function perpWatchPoseAt(timeline, t) {
   const xm = perpMonthProgress(model, p);
   const kc = s.k + xm;
   // la came programme tourne pendant que le bec est leve
-  const rest = perpMix(th.restP[s.k], th.restP[(s.k + 1) % PERP_PROGRAM_TEETH], perpEase(xm));
+  const rest = perpMix(th.restP[s.k], th.restP[(s.k + 1) % th.cycleMonths], perpEase(xm));
   const leverP = Math.max(rest, snail);
   const wc = s.w + pawls.day.progressAt(reached);
 
@@ -206,12 +206,17 @@ function perpWatchPoseAt(timeline, t) {
 /** Angles et indications communs aux deux constructions. */
 function perpComposePose(model, f, extraAngles) {
   const dim = model.dim;
+  const th = model.thresholds;
   const sense = model.monthSense ?? 1;
-  const round31 = (v) => {
+  const roundDate = (v) => {
     const r = Math.round(v);
-    return r >= 32 ? r - 31 : r;
+    return r > th.N ? r - th.N : r;
   };
-  const kInt = Math.round(f.kc) % PERP_PROGRAM_TEETH;
+  const kInt = Math.round(f.kc) % th.cycleMonths;
+  // came de 48 mois : roue menee par le pignon des mois, en sens inverse ;
+  // came de 12 mois : solidaire de l'etoile des mois, et son satellite
+  const yearly = !!model.satellite;
+  const programAngle = yearly ? sense * f.kc * dim.month.pitch : (-sense * f.kc * 2 * Math.PI) / PERP_PROGRAM_TEETH;
 
   return {
     t: f.time,
@@ -233,18 +238,87 @@ function perpComposePose(model, f, extraAngles) {
       // mene par le doigt du quantieme, l'etoile des mois tourne a rebours ;
       // la roue programme, engrenee sur son pignon, en sens inverse d'elle
       month: sense * f.kc * dim.month.pitch,
-      program: (-sense * f.kc * 2 * Math.PI) / PERP_PROGRAM_TEETH,
+      program: programAngle,
+      ...(yearly ? { satellite: perpSatelliteAngle(model, f.s.k, f.kc) } : {}),
       ...extraAngles,
       grandLever: model.grandLever.thetaOf(f.leverP),
       ...(model.monthLever ? { monthLever: perpMonthLeverAngle(model, f.p) } : {}),
     },
     indication: {
-      date: round31(f.p),
+      date: roundDate(f.p),
       weekday: Math.round(f.wc) % PERP_DAY_TEETH,
       month: kInt % 12,
       cycleYear: Math.floor(kInt / 12),
+      ...(yearly ? { satellite: perpSatelliteIndex(model.cal, kInt) } : {}),
     },
   };
+}
+
+// ------------------------------------------------------------------
+// Satellite de la came de 12 mois
+// ------------------------------------------------------------------
+
+/**
+ * Le satellite avance d'un cran par tour de came comme une croix de Malte :
+ * un doigt fixe, a `rho` de l'arbre des mois, entre dans son etoile
+ * d'entrainement quand elle passe devant lui et la fait tourner tant qu'il
+ * reste a sa portee. L'angle se lit directement sur la position du doigt --
+ * rien n'est interpole. Hors de ce passage, un sautoir tient le satellite.
+ * Repere de la came ; angle relatif a la pose de reference (annee 0).
+ */
+function perpSatelliteAngle(model, kState, kc) {
+  const sat = model.satellite;
+  const sense = model.monthSense ?? 1;
+  const step = (2 * Math.PI) / sat.positions;
+  const base = perpSatelliteIndex(model.cal, kState);
+  let progress = 0;
+  const xm = kc - kState;
+  if (xm > 0 && (kState + 1) % 12 === sat.stepMonth) {
+    // doigt vu depuis la came, qui a tourne de camAngle
+    const camAngle = sense * kc * model.dim.month.pitch;
+    const F = perpPolar(model.centers.M, sat.rho, sat.fingerAngle - camAngle);
+    const v = { x: F.x - sat.S.x, y: F.y - sat.S.y };
+    if (Math.hypot(v.x, v.y) <= sat.drive + 1e-9) {
+      progress = perpClamp01((sense * perpAngleDiff(sat.entry, Math.atan2(v.y, v.x))) / step);
+    } else {
+      progress = xm < 0.5 ? 0 : 1;
+    }
+  }
+  return -sense * (base + progress) * step;
+}
+
+/**
+ * Geometrie du satellite dans le repere de la came, a sa pose de reference
+ * (came au mois 0, satellite a l'annee 0) :
+ *   - S : centre, sur le rayon qui passera sous le bec au mois lu ;
+ *   - lobes : le lobe j pointe vers l'exterieur quand le satellite est a
+ *     l'annee j ;
+ *   - etoile d'entrainement, a l'etage du doigt fixe : une dent par cran, de
+ *     longueur `drive`, calees a +-pi/n du rayon exterieur au repos ;
+ *   - doigt fixe : rayon `rho` choisi pour que le doigt, de son entree a sa
+ *     sortie de l'etoile, la fasse tourner d'un cran exactement.
+ *     Dans le triangle arbre-satellite-doigt : rho^2 = rS^2 + l^2 + 2.rS.l.cos(pi/n).
+ */
+function perpSatelliteLayout(model, becAngle) {
+  const sat = model.satellite;
+  const sense = model.monthSense ?? 1;
+  const dim = model.dim;
+  const M = model.centers.M;
+  const n = sat.positions;
+  const out = becAngle - sense * sat.readMonth * dim.month.pitch;
+  const S = perpPolar(M, sat.rS, out);
+  const rhoOf = (l) => Math.sqrt(sat.rS * sat.rS + l * l + 2 * sat.rS * l * Math.cos(Math.PI / n));
+  // arc de came pendant lequel le doigt tient l'etoile (angle au centre)
+  const sweepOf = (l) => 2 * Math.asin(Math.min(1, (l * Math.sin(Math.PI / n)) / rhoOf(l)));
+  // fentes aussi longues que l'arbre le permet, mais raccourcies si le doigt
+  // tenait l'etoile au-dela de 70 % du saut de l'etoile des mois
+  let drive = Math.max(0.2 * dim.k, Math.min(0.45 * dim.k, sat.rS - dim.arborClearance - 0.05 * dim.k));
+  while (drive > 0.15 * dim.k && sweepOf(drive) > 0.7 * dim.month.pitch) drive -= 0.01 * dim.k;
+  const rho = rhoOf(drive);
+  // le doigt est sur le rayon exterieur du satellite au milieu du changement
+  // de mois qui le fait avancer
+  const fingerAngle = out + sense * (sat.stepMonth - 0.5) * dim.month.pitch;
+  return { out, S, drive, rho, fingerAngle, entry: out + (sense * Math.PI) / n, sweep: sweepOf(drive) };
 }
 
 // ------------------------------------------------------------------
@@ -297,14 +371,21 @@ function perpProgramCamProfile(model) {
   const G = model.centers.G;
   const gl = model.grandLever;
   const th = model.thresholds;
-  const sector = (2 * Math.PI) / PERP_PROGRAM_TEETH;
+  const sat = model.satellite;
+  const positions = model.dim.program.positions;
+  const sector = (2 * Math.PI) / positions;
+  // la came de 48 mois tourne a l'inverse de l'etoile des mois, celle de 12
+  // mois avec elle : un cran se presente sous le bec dans l'autre sens
+  const camDir = sat ? 1 : -1;
   const ramp = sector * 0.12;
   const pts = [];
-  for (let kk = 0; kk < PERP_PROGRAM_TEETH; kk++) {
-    const L = perpProgramLength(kk);
+  for (let kk = 0; kk < positions; kk++) {
+    // came de 12 mois : la premiere annee du cycle suffit a nommer les crans ;
+    // le mois lu par le satellite est creuse jusqu'a lui
+    const L = perpCycleLength(model.cal, kk);
     const bec = perpPolar(gl.P, gl.bec.La, gl.thetaOf(th.restByLength[L]) + gl.bec.gamma);
-    const centerAngle = perpAngleTo(G, bec) + (model.monthSense ?? 1) * kk * sector;
-    const r = th.levels[L];
+    const centerAngle = perpAngleTo(G, bec) - camDir * (model.monthSense ?? 1) * kk * sector;
+    const r = sat && kk === sat.readMonth ? sat.rS + 0.35 * sat.lobeMin : th.levels[L];
     for (let j = 0; j <= 6; j++) {
       const a = centerAngle - sector / 2 + ramp + ((sector - 2 * ramp) * j) / 6;
       pts.push({ x: r * Math.cos(a), y: r * Math.sin(a), k: kk });
@@ -325,55 +406,87 @@ function perpProgramCamProfile(model) {
  */
 function perpMargins(model) {
   const th = model.thresholds;
+  const N = th.N;
+  const lengths = Object.keys(th.levels).map(Number);
+  const shortest = Math.min(...lengths);
   const issues = [];
   let worst = Infinity;
   if (model.kind === "montre") {
     // le repos d'un mois de L jours doit tomber entre L-1 et L
-    for (const L of [28, 29, 30, 31]) {
+    for (const L of lengths) {
       const r = th.restByLength[L];
       const margin = Math.min(r - (L - 1), L - r);
       worst = Math.min(worst, margin);
       if (margin < 0.1) issues.push(`repos du mois de ${L} jours à ${margin.toFixed(2)} dent de la goupille`);
     }
-    if (th.topP < 32.05 || th.topP > 32.45) issues.push(`butée haute de la grande bascule hors plage (${th.topP.toFixed(2)})`);
-    if (th.lowP > th.restByLength[28] - 0.05) issues.push("le limaçon touche la grande bascule en journée");
-    if (model.monthFinger && model.monthFinger.windowStart < 31.02) issues.push("le doigt des mois pousse l'étoile des mois avant le passage au 1");
+    if (th.topP < N + 1.05 || th.topP > N + 1.45) issues.push(`butée haute de la grande bascule hors plage (${th.topP.toFixed(2)})`);
+    if (th.lowP > th.restByLength[shortest] - 0.05) issues.push("le limaçon touche la grande bascule en journée");
+    if (model.monthFinger && model.monthFinger.windowStart < N + 0.02) issues.push("le doigt des mois pousse l'étoile des mois avant le passage au 1");
     for (const [key, label] of [
       ["date", "de quantième"],
       ["day", "des jours"],
     ]) {
-      if (model.grandLever.pawls[key].cBank < th.restByLength[31] + 0.02) issues.push(`la goupille de dégagement libère le cliquet ${label} dès le repos des mois de 31 jours`);
+      if (model.grandLever.pawls[key].cBank < th.restByLength[N] + 0.02) issues.push(`la goupille de dégagement libère le cliquet ${label} dès le repos des mois de ${N} jours`);
     }
-    return { worst, issues };
+  } else {
+    for (const L of lengths) {
+      const r = th.restByLength[L];
+      const margin = Math.min(r - L, L + 1 - r);
+      worst = Math.min(worst, margin);
+      if (margin < 0.1) issues.push(`repos du mois de ${L} jours à ${margin.toFixed(2)} dent du jour voisin`);
+    }
+    if (th.topP < N + 0.6) issues.push(`butée haute du grand levier trop basse (${th.topP.toFixed(2)})`);
+    if (th.lowP > th.restByLength[shortest] - 0.05) issues.push("le limaçon touche le levier en journée");
+    if (th.monthHalf <= th.restByLength[N] + 0.05) issues.push("le changement de mois survient bec posé sur la came");
   }
-  for (const L of [28, 29, 30, 31]) {
-    const r = th.restByLength[L];
-    const margin = Math.min(r - L, L + 1 - r);
-    worst = Math.min(worst, margin);
-    if (margin < 0.1) issues.push(`repos du mois de ${L} jours à ${margin.toFixed(2)} dent du jour voisin`);
+  const sat = model.satellite;
+  if (sat) {
+    // tolerance : les cotes sont arrondies au centieme
+    if (sat.inner < model.dim.arborClearance - model.dim.machining) issues.push("le plus long lobe du satellite frôle l'arbre des mois en tournant");
+    // le doigt doit avoir quitte l'etoile avant la fin du saut de l'etoile des mois
+    if (sat.sweep > 0.8 * model.dim.month.pitch) issues.push("le doigt du satellite le tient plus longtemps que ne dure le saut des mois");
   }
-  if (th.topP < 31.6) issues.push(`butée haute du grand levier trop basse (${th.topP.toFixed(2)})`);
-  if (th.lowP > th.restByLength[28] - 0.05) issues.push("le limaçon touche le levier en journée");
-  if (th.monthHalf <= th.restByLength[31] + 0.05) issues.push("le changement de mois survient bec posé sur la came");
   return { worst, issues };
 }
 
 /**
- * Confronte la logique du mecanisme au calendrier gregorien, jour apres
- * jour, depuis la date de reglage. S'arrete au premier ecart -- en regle
- * generale le 1er mars d'une annee seculaire non bissextile, que tout
- * quantieme perpetuel mecanique prend pour un 29 fevrier.
+ * Largeur de bec au-dela de laquelle le bec, pose sur un lobe du satellite,
+ * toucherait aussi un lobe voisin plus long. Nulle limite quand les lobes
+ * sont assez ecartes (croix de 4) : un voisin a 90 degres ne remonte pas
+ * jusqu'au bec. Retourne Infinity dans ce cas.
+ */
+function perpSatelliteBecLimit(sat) {
+  const step = (2 * Math.PI) / sat.positions;
+  let limit = Infinity;
+  const n = sat.lobes.length;
+  for (let j = 0; j < n; j++) {
+    for (const nb of [(j + 1) % n, (j + n - 1) % n]) {
+      // le voisin depasse-t-il, le long du rayon, le lobe lu ?
+      if (sat.lobes[nb] * Math.cos(step) <= sat.lobes[j]) continue;
+      limit = Math.min(limit, 2 * sat.lobes[nb] * Math.sin(step));
+    }
+  }
+  return limit;
+}
+
+/**
+ * Confronte la logique du mecanisme a son calendrier, jour apres jour,
+ * depuis la date de reglage. S'arrete au premier ecart -- en gregorien, en
+ * regle generale le 1er mars d'une annee seculaire non bissextile, que tout
+ * quantieme perpetuel mecanique prend pour un 29 fevrier. Le calendrier
+ * hegirien arithmetique n'a pas de telles exceptions : son cycle de 30 ans
+ * est entierement porte par la came, et l'ecart ne doit jamais venir.
  */
 function perpVerify(model, startCivil, maxDays = 80000) {
   const startDay = perpDayNumber(startCivil.y, startCivil.m, startCivil.d);
-  let state = perpStateFromCivil(startCivil);
+  let state = perpStateFromDay(model.cal, startDay);
   const step = perpNightStepFor(model);
   for (let i = 0; i < maxDays; i++) {
     const civil = perpCivilFromDayNumber(startDay + i);
-    const expected = perpStateFromCivil(civil);
+    const expected = perpStateFromDay(model.cal, startDay + i);
     if (state.p !== expected.p || state.w !== expected.w || state.k !== expected.k) {
-      const secular = civil.m === 2 && civil.d === 1 && civil.y % 100 === 0 && !perpIsLeapYear(civil.y);
-      return { ok: false, days: i, civil, shown: state, expected, secular };
+      const secular = model.cal.family === "gregorien" && civil.m === 2 && civil.d === 1 && civil.y % 100 === 0 && !perpIsLeapYear(civil.y);
+      return { ok: false, days: i, civil, date: model.cal.fromDayNumber(startDay + i), shown: state, expected, secular };
     }
     state = step(state, model.thresholds);
   }

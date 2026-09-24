@@ -10,6 +10,8 @@
 const perpState = {
   // construction : "pendule" (bascules separees) ou "montre" (grande bascule)
   kind: "pendule",
+  // calendrier et programme : voir perpCalendar
+  calendar: "gregorien-48",
   // positions en fraction du rayon de platine : un changement de platine
   // agrandit le cadran sans deplacer les affichages sur celui-ci
   displays: {
@@ -72,13 +74,13 @@ function perpFmtMm(v) {
 function perpEnsureModel() {
   const plateRadius = perpPlateRadius();
   const displays = { date: perpDisplayPoint("date"), day: perpDisplayPoint("day"), month: perpDisplayPoint("month") };
-  const key = JSON.stringify([perpState.kind, plateRadius, displays, perpState.startDate]);
+  const key = JSON.stringify([perpState.kind, perpState.calendar, plateRadius, displays, perpState.startDate]);
   if (key === perpState.modelKey) return perpState.model;
   perpState.modelKey = key;
 
   let model;
   try {
-    model = synthesizePerpetual({ plateRadius, displays, kind: perpState.kind });
+    model = synthesizePerpetual({ plateRadius, displays, kind: perpState.kind, calendar: perpState.calendar });
   } catch (err) {
     console.error(err);
     model = { ok: false, problems: [`Erreur de calcul : ${err.message}`] };
@@ -125,23 +127,44 @@ function perpRenderPanel() {
     })
     .join("");
 
+  const cal = perpCalendar(perpState.calendar);
+  const N = cal.dateTeeth;
+  const camName = cal.program.positions === 12 ? "came de 12 mois" : "came programme de 48 mois";
   const description =
     perpState.kind === "montre"
       ? `Construction de <strong>montre</strong>, à <strong>grande bascule</strong>, vue côté cadran. Un seul
       <strong>limaçon</strong> de la roue de 24 h lève chaque soir la grande bascule, qui retombe à minuit sur la
-      <strong>came programme de 48 mois</strong>. En fin de levée, ses deux <strong>cliquets</strong> avancent le
+      <strong>${camName}</strong>. En fin de levée, ses deux <strong>cliquets</strong> avancent le
       quantième et le jour d'une dent — une <strong>goupille fixe</strong> les tient hors de la denture jusque-là, si
       bien qu'ils ne travaillent que sur une plage que tous les mois parcourent, et jamais de plus d'une dent. Son
       <strong>crochet</strong> part du cran du mois courant : il ne se trouve derrière la goupille de fin de mois que
-      le dernier jour du mois, la rattrape alors et la ramène au 1. Au passage du 31 au 1, un <strong>doigt</strong> de
+      le dernier jour du mois, la rattrape alors et la ramène au 1. Au passage du ${N} au 1, un <strong>doigt</strong> de
       la roue de quantième fait avancer l'étoile des mois — il faut pour cela que les deux affichages soient voisins ;
       sinon un levier des mois fait le relais. Par rapport à la pendule : deux ou trois leviers, autant de ressorts,
       et deux cames de moins.`
       : `Construction de <strong>pendule</strong>, à <strong>grand levier</strong>, vue côté cadran. La roue de 24 h
       arme chaque soir deux <strong>bascules</strong> qui avancent le quantième et le jour d'une dent. Le grand levier
-      repose sur la <strong>came programme de 48 mois</strong> : la profondeur du cran du mois fixe jusqu'où son
-      cliquet balaie l'étoile de 31, si bien qu'il n'attrape la goupille de fin de mois que le dernier jour d'un mois
+      repose sur la <strong>${camName}</strong> : la profondeur du cran du mois fixe jusqu'où son
+      cliquet balaie l'étoile de ${N}, si bien qu'il n'attrape la goupille de fin de mois que le dernier jour d'un mois
       court et la ramène au 1. Des <strong>ressorts</strong> rappellent les leviers, des sautoirs tiennent les étoiles.`;
+  const programNote = {
+    "gregorien-48": `Programme : la <strong>came de 48 mois</strong>, menée par le pignon de l'étoile des mois, fait un
+      tour en quatre ans ; chaque février y a son cran, celui de l'année bissextile moins profond. Quarante-huit crans
+      de 7,5° : c'est la came la plus simple à comprendre, et la plus fine à tailler.`,
+    "gregorien-12": `Programme à la manière de <strong>Dubois Dépraz</strong> : la <strong>came de 12 mois</strong> est
+      solidaire de l'étoile des mois et fait un tour par an. Son cran de février est creusé jusqu'à la
+      <strong>croix bissextile</strong> qu'elle porte en satellite : trois bras pour 28 jours, un plus long pour 29.
+      Une fois par tour, au passage à août, une fente de la croix rencontre un <strong>doigt fixe</strong> qui la fait
+      tourner d'un quart de tour, comme une croix de Malte ; un sautoir la tient le reste de l'année. Douze crans de
+      30° au lieu de 48 de 7,5° : la came est plus facile à tailler, et le bec a de la place pour se poser.`,
+  }[cal.id] ?? `Calendrier <strong>hégirien arithmétique</strong> : douze mois lunaires, alternativement de 30 et 29
+      jours, et un 30 dhou al-hijja onze années sur trente (années ${cal.leapYears.join(", ")} du cycle), soit 10 631
+      jours par cycle, sans autre exception. L'étoile de quantième a <strong>30 dents</strong> : le grand levier ne
+      rattrape la goupille qu'en fin de mois de 29 jours. La <strong>came de 12 mois</strong>, solidaire de l'étoile des
+      mois, porte dans son cran de dhou al-hijja une <strong>came de 30 ans</strong> en satellite : un lobe par année,
+      onze longs. Un <strong>doigt fixe</strong> la fait avancer d'un lobe par tour, au passage à joumada al-oula.
+      Le calendrier religieux, fondé sur l'observation du croissant, s'écarte parfois d'un jour de l'arithmétique :
+      c'est au correcteur de le rattraper, aucune came ne peut le prévoir.`;
 
   panel.innerHTML = `
     <h2>Quantième perpétuel</h2>
@@ -154,10 +177,22 @@ function perpRenderPanel() {
         </select>
       </div>
     </div>
+    <div class="field-row">
+      <div class="field full">
+        <label>Calendrier et programme</label>
+        <select class="perp-calendar">
+          ${opt("gregorien-48", "Grégorien — came de 48 mois", cal.id === "gregorien-48")}
+          ${opt("gregorien-12", "Grégorien — came de 12 mois et croix bissextile (Dubois Dépraz)", cal.id === "gregorien-12")}
+          ${opt("hegirien-16", "Hégirien — came de 12 mois et came de 30 ans", cal.id === "hegirien-16")}
+          ${opt("hegirien-15", "Hégirien — idem, 15e année abondante au lieu de la 16e", cal.id === "hegirien-15")}
+        </select>
+      </div>
+    </div>
     <p class="empty-note">
       ${description}
       Toute la géométrie (pivots, bras, cames) se recalcule à partir des positions choisies ci-dessous.
     </p>
+    <p class="empty-note">${programNote}</p>
     <div class="table-scroll">
       <table class="candidates compact">
         <thead><tr><th>Affichage</th><th>Position</th><th>Distance au centre (mm)</th><th></th></tr></thead>
@@ -188,7 +223,11 @@ function perpRenderPanel() {
       <button type="button" class="secondary perp-prev">◀ jour</button>
       <button type="button" class="secondary perp-next">jour ▶</button>
       <button type="button" class="secondary perp-month-end" title="Se placer le dernier soir du mois, juste avant le changement de date">fin du mois ⏭</button>
-      <button type="button" class="secondary perp-feb" title="Se placer le soir du dernier jour de février : le grand levier fait sauter 3 ou 2 dents">fin février ⏭</button>
+      <button type="button" class="secondary perp-feb" title="${
+        cal.family === "hegirien"
+          ? "Se placer le soir du dernier jour de dhou al-hijja : le 29 ou le 30 selon l'année du cycle"
+          : "Se placer le soir du dernier jour de février : le grand levier fait sauter 3 ou 2 dents"
+      }">fin ${cal.family === "hegirien" ? "dhou al-hijja" : "février"} ⏭</button>
     </div>
     <div class="perp-controls">
       <button type="button" class="perp-play">${perpState.anim.raf ? "■ arrêter" : "▶ faire défiler"}</button>
@@ -230,6 +269,11 @@ function perpBindPanel(panel) {
   });
   on(".perp-kind", "change", (e) => {
     perpState.kind = e.target.value === "montre" ? "montre" : "pendule";
+    perpStructuralChange();
+  });
+  on(".perp-calendar", "change", (e) => {
+    perpState.calendar = perpCalendar(e.target.value).id;
+    perpState.t = 0.5;
     perpStructuralChange();
   });
   on(".perp-hour-select", "change", (e) => {
@@ -309,7 +353,7 @@ function perpBindPanel(panel) {
  */
 function perpNearMonth() {
   const R = perpPlateRadius();
-  const dim = perpDimensions(R, "montre");
+  const dim = perpDimensions(R, "montre", perpCalendar(perpState.calendar));
   const D = perpDisplayPoint("date", R);
   const W = perpDisplayPoint("day", R);
   const current = perpDisplayPoint("month", R);
@@ -328,7 +372,7 @@ function perpNearMonth() {
   let tries = 0;
   for (const M of candidates) {
     if (!perpDesignMonthFinger(D, M, dim, R, [{ x: 0, y: 0, r: 0.5 * dim.k }, { ...W, r: dim.arborClearance }])) continue;
-    const model = synthesizePerpetual({ plateRadius: R, kind: "montre", displays: { date: D, day: W, month: M } });
+    const model = synthesizePerpetual({ plateRadius: R, kind: "montre", calendar: perpState.calendar, displays: { date: D, day: W, month: M } });
     if (model.ok && model.monthFinger) {
       perpState.displays.month = { hour: Math.round(perpHourOfPoint(M)) || 12, rel: Math.hypot(M.x, M.y) / R, free: { x: M.x / R, y: M.y / R } };
       perpStructuralChange();
@@ -379,18 +423,23 @@ function perpHandleDrawingClick(e) {
   return true;
 }
 
-/** Se place le dernier soir du mois (ou du prochain fevrier), avant les bascules. */
-function perpJumpToMonthEnd(february) {
+/**
+ * Se place le dernier soir du mois, avant les bascules -- ou celui du
+ * prochain mois de longueur variable (fevrier, dhou al-hijja).
+ */
+function perpJumpToMonthEnd(variableMonth) {
   const tl = perpState.timeline;
   if (!tl) return;
+  const cal = tl.model.cal;
+  const target = cal.family === "hegirien" ? 11 : 1;
   let n = Math.floor(perpState.t);
   const hour = (perpState.t - n) * 24;
   for (let guard = 0; guard < 800; guard++, n++) {
-    const civil = perpCivilFromDayNumber(tl.startDay + n);
-    const next = perpCivilFromDayNumber(tl.startDay + n + 1);
-    const lastDay = next.m !== civil.m;
+    const date = cal.fromDayNumber(tl.startDay + n);
+    const next = cal.fromDayNumber(tl.startDay + n + 1);
+    const lastDay = next.m !== date.m;
     const alreadyPast = n === Math.floor(perpState.t) && hour >= perpTiming().nightStart - 0.2;
-    if (lastDay && !alreadyPast && (!february || civil.m === 1)) {
+    if (lastDay && !alreadyPast && (!variableMonth || date.m === target)) {
       perpState.t = n + (perpTiming().nightStart - 0.15) / 24;
       break;
     }
@@ -420,10 +469,16 @@ function perpRenderNotes() {
 
   const v = perpState.verify;
   const start = perpParseDate(perpState.startDate);
+  const cal = model.cal;
+  const hijri = cal.family === "hegirien";
   if (v && start) {
     const years = (v.days / 365.2425).toFixed(1).replace(".", ",");
     if (v.ok) {
-      verifyEl.textContent = `Vérifié jour par jour contre le calendrier grégorien : aucun écart sur ${v.days} jours.`;
+      verifyEl.textContent = hijri
+        ? `Vérifié jour par jour contre le calendrier hégirien arithmétique : aucun écart sur ${v.days} jours (${years} années solaires, ${(v.days / 10631)
+            .toFixed(1)
+            .replace(".", ",")} cycles de 30 ans). Le cycle est tout entier sur la came : il n'y aura pas d'écart.`
+        : `Vérifié jour par jour contre le calendrier grégorien : aucun écart sur ${v.days} jours.`;
     } else if (v.secular) {
       const last = perpCivilFromDayNumber(perpDayNumber(v.civil.y, v.civil.m, v.civil.d) - 1);
       verifyEl.innerHTML =
@@ -433,7 +488,9 @@ function perpRenderNotes() {
         `Il faudra avancer le quantième d'un jour ce matin-là.`;
     } else {
       verifyEl.classList.add("alert");
-      verifyEl.textContent = `ÉCART du mécanisme le ${perpFormatCivil(v.civil)} (après ${v.days} jours) : il affiche le ${v.shown.p} ${PERP_MONTH_NAMES[v.shown.k % 12]}. La géométrie est à revoir.`;
+      verifyEl.textContent = `ÉCART du mécanisme le ${cal.format(v.date)} (${perpFormatCivil(v.civil)}, après ${v.days} jours) : il affiche le ${v.shown.p} ${
+        cal.monthNames[v.shown.k % 12]
+      }. La géométrie est à revoir.`;
     }
   }
 
@@ -442,9 +499,21 @@ function perpRenderNotes() {
   const ml = model.monthLever;
   const deg = (rad) => ((Math.abs(rad) * 180) / Math.PI).toFixed(1).replace(".", ",");
   const dents = (v) => v.toFixed(2).replace(".", ",");
-  const programLine = `Came programme : crans à ${[28, 29, 30, 31].map((L) => `${perpFmtMm(th.levels[L])} mm (${L} j)`).join(", ")} ; relus à ${[28, 29, 30, 31]
+  const lengths = cal.lengths;
+  const sat = model.satellite;
+  let programLine = `${sat ? "Came de 12 mois" : "Came programme"} : crans à ${lengths.map((L) => `${perpFmtMm(th.levels[L])} mm (${L} j)`).join(", ")} ; relus à ${lengths
     .map((L) => dents(th.restByLength[L]))
     .join(" / ")} dents, marge du cliquet ${dents(perpState.margins.worst)} dent.`;
+  if (sat) {
+    const [shortL, longL] = [Math.min(...sat.lobes), Math.max(...sat.lobes)];
+    const becLimit = perpSatelliteBecLimit(sat);
+    programLine +=
+      ` ${sat.positions === 4 ? "Croix bissextile" : "Came de 30 ans"} en satellite à ${perpFmtMm(sat.rS)} mm de l'arbre : ` +
+      `lobes de ${perpFmtMm(shortL)} et ${perpFmtMm(longL)} mm, le plus long passe à ${perpFmtMm(sat.inner)} mm de l'axe des mois quand il tourne côté centre ; ` +
+      `étoile d'entraînement de ${perpFmtMm(sat.drive)} mm, doigt fixe à ${perpFmtMm(sat.rho)} mm de l'arbre des mois — il tient le satellite pendant ${deg(sat.sweep)}° de came, ` +
+      `sur les 30° d'un changement de mois.` +
+      (Number.isFinite(becLimit) ? ` Lobes à ${deg((2 * Math.PI) / sat.positions)}° : le bec doit faire moins de ${perpFmtMm(becLimit)} mm de large pour ne pas toucher un lobe voisin plus long.` : "");
+  }
   const finger = model.monthFinger;
   const monthLine = finger
     ? `Doigt des mois : fixé sur la roue de quantième, ${perpFmtMm(finger.rF)} mm de rayon ; il pousse l'étoile des mois de ${dents(finger.windowStart)} à ${dents(
@@ -468,7 +537,7 @@ function perpRenderNotes() {
           `Limaçon de 24 h (seule came de la roue) : ${perpFmtMm(th.snailLow)} → ${perpFmtMm(th.snailTop)} mm, butée haute à ${dents(th.topP)} dents.`,
           `Grande bascule : crochet de fin de mois ${perpFmtMm(gl.forkLength)} mm, bec ${perpFmtMm(gl.bec.La)} mm, palpeur ${perpFmtMm(gl.lift.La)} mm, rendement mini ${dents(gl.minEff)} ; ` +
             `cliquet de quantième ${perpFmtMm(gl.pawls.date.drive.Lp)} mm (libéré à ${dents(gl.pawls.date.cBank)}, pousse de ${dents(gl.pawls.date.cS)} à ${dents(gl.pawls.date.cE)} dents de levée), ` +
-            `cliquet des jours ${perpFmtMm(gl.pawls.day.drive.Lp)} mm (libéré à ${dents(gl.pawls.day.cBank)}, pousse de ${dents(gl.pawls.day.cS)} à ${dents(gl.pawls.day.cE)}) — le repos des mois de 31 jours est à ${dents(th.restByLength[31])}.`,
+            `cliquet des jours ${perpFmtMm(gl.pawls.day.drive.Lp)} mm (libéré à ${dents(gl.pawls.day.cBank)}, pousse de ${dents(gl.pawls.day.cS)} à ${dents(gl.pawls.day.cE)}) — le repos des mois de ${th.N} jours est à ${dents(th.restByLength[th.N])}.`,
           monthLine,
           ...watchParts,
           `Leviers supposés étagés : leurs bras passent au-dessus des roues et sont découpés pour contourner les arbres des aiguilles, leurs pivots évitent toute pièce tournante.`,
@@ -496,13 +565,16 @@ function perpFormatHour(h) {
 /** Texte de lecture : ce qu'affiche le mecanisme, et la date reelle. */
 function perpReadout(pose) {
   const tl = perpState.timeline;
-  const real = perpCivilFromDayNumber(tl.startDay + pose.n);
+  const cal = tl.model.cal;
+  const day = tl.startDay + pose.n;
+  const civil = perpCivilFromDayNumber(day);
   const ind = pose.indication;
-  const cycle = ind.cycleYear === 0 ? "année bissextile" : `${ind.cycleYear}${ind.cycleYear === 1 ? "re" : "e"} année après bissextile`;
-  const shown = `${PERP_DAY_NAMES[ind.weekday]} ${ind.date} ${PERP_MONTH_NAMES[ind.month]} (${cycle})`;
-  const expected = perpStateFromCivil(real);
+  const shown = `${PERP_DAY_NAMES[ind.weekday]} ${ind.date} ${cal.monthNames[ind.month]} (${cal.cycleLabel(ind.cycleYear)})`;
+  const expected = perpStateFromDay(cal, day);
   const matches = expected.p === ind.date && expected.w === ind.weekday && expected.k % 12 === ind.month;
-  return { shown, real: `${perpFormatCivil(real)}, ${perpFormatHour(pose.h)}`, matches };
+  // en hegirien, la date de reference est donnee dans les deux calendriers
+  const real = cal.family === "hegirien" ? `${cal.format(cal.fromDayNumber(day))} (${perpFormatCivil(civil)})` : perpFormatCivil(civil);
+  return { shown, real: `${real}, ${perpFormatHour(pose.h)}`, matches };
 }
 
 /** Pose courante : dessin, curseur d'heure, lecture, statut. */

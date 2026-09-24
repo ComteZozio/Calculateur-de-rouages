@@ -165,23 +165,29 @@ function perpDesignBascule(C, star, H, dim, plateRadius, obstacles, pivots) {
  * une pointe.
  */
 function perpDesignSautoir(C, star, drive, dim, plateRadius, obstacles, pivots, sense = 1) {
-  let best = null;
   const pawlTip = drive.tip(drive.psiMid);
-  for (let j = 0; j < star.teeth; j++) {
-    // `sense` : -1 pour une etoile poussee a rebours (dent en avant de l'autre cote)
-    const sigma = drive.tauStart - sense * (j + 0.25) * star.pitch;
-    if (Math.abs(perpAngleDiff(sigma, drive.tauStart)) < 0.7) continue;
-    for (const side of [1, -1]) {
-      const base = perpPolar(C, star.tip + 0.45 * dim.k, sigma);
-      const pivot = perpPolar(base, 1.8 * dim.k, sigma + (side * Math.PI) / 2);
-      if (!perpInPlate(pivot, 0, plateRadius, 0.5 * dim.k)) continue;
-      if (!perpPointClear(pivot, dim.pivotClearance, obstacles)) continue;
-      const room = Math.min(perpDist(pivot, pawlTip), ...pivots.map((q) => perpDist(pivot, q)), 99);
-      if (room < 0.9 * dim.k) continue;
-      if (!best || room > best.room) best = { sigma, pivot, side, room };
+  // bras court d'abord ; un bras plus long va chercher son pivot hors d'une
+  // piece tournante plus large que l'etoile (came de 12 mois sous l'etoile
+  // des mois)
+  for (const arm of [1.8, 2.6, 3.4]) {
+    let best = null;
+    for (let j = 0; j < star.teeth; j++) {
+      // `sense` : -1 pour une etoile poussee a rebours (dent en avant de l'autre cote)
+      const sigma = drive.tauStart - sense * (j + 0.25) * star.pitch;
+      if (Math.abs(perpAngleDiff(sigma, drive.tauStart)) < 0.7) continue;
+      for (const side of [1, -1]) {
+        const base = perpPolar(C, star.tip + 0.45 * dim.k, sigma);
+        const pivot = perpPolar(base, arm * dim.k, sigma + (side * Math.PI) / 2);
+        if (!perpInPlate(pivot, 0, plateRadius, 0.5 * dim.k)) continue;
+        if (!perpPointClear(pivot, dim.pivotClearance, obstacles)) continue;
+        const room = Math.min(perpDist(pivot, pawlTip), ...pivots.map((q) => perpDist(pivot, q)), 99);
+        if (room < 0.9 * dim.k) continue;
+        if (!best || room > best.room) best = { sigma, pivot, side, room };
+      }
     }
+    if (best) return best;
   }
-  return best;
+  return null;
 }
 
 // ------------------------------------------------------------------
@@ -198,15 +204,17 @@ function perpDesignSautoir(C, star, drive, dim, plateRadius, obstacles, pivots, 
 function perpDesignMonthLever(D, M, dim, plateRadius, obstacles, pivots) {
   const rF = dim.date.monthPin;
   const pitchD = dim.date.pitch;
-  const a = PERP_MONTH_WINDOW_START;
-  const samples = Array.from({ length: 15 }, (_, i) => 31.0 + i / 14);
+  // passage du dernier jour (N) au 1
+  const N = dim.date.teeth;
+  const a = N;
+  const samples = Array.from({ length: 15 }, (_, i) => N + i / 14);
   let best = null;
 
   for (const drive of perpPawlCandidates(M, dim.month, dim, plateRadius, obstacles, pivots)) {
     for (let zi = 0; zi < 72; zi++) {
       const zeta = (zi * 2 * Math.PI) / 72;
       const pinAt = (p) => perpPolar(D, rF, zeta + (p - 1) * pitchD);
-      const ref = perpAngleTo(drive.B, pinAt(31.5));
+      const ref = perpAngleTo(drive.B, pinAt(N + 0.5));
       const theta = (p) => ref + perpAngleDiff(perpAngleTo(drive.B, pinAt(p)), ref);
 
       let ok = true;
@@ -238,12 +246,12 @@ function perpDesignMonthLever(D, M, dim, plateRadius, obstacles, pivots) {
       if (!ok || minEff < 0.45) continue;
 
       const delta = drive.psiS - theta(a);
-      const pEnd = perpSolve((p) => drive.s * (theta(p) - theta(a)), drive.delta, a, PERP_MONTH_WINDOW_MAX);
+      const pEnd = perpSolve((p) => drive.s * (theta(p) - theta(a)), drive.delta, a, N + PERP_MONTH_WINDOW_MAX);
       if (pEnd === null) continue;
       const pHalf = perpSolve((p) => drive.progress(theta(p) + delta), 0.5, a, pEnd);
-      if (pHalf === null || pHalf < 31 + PERP_REST_OFFSET + 0.1) continue;
+      if (pHalf === null || pHalf < N + PERP_REST_OFFSET + 0.1) continue;
 
-      const score = drive.Lp + maxLen + 3 * (1 - minEff) + (pEnd > 31.85 ? 1 : 0);
+      const score = drive.Lp + maxLen + 3 * (1 - minEff) + (pEnd > N + 0.85 ? 1 : 0);
       if (!best || score < best.score) {
         best = { drive, zeta, delta, theta, windowStart: a, windowEnd: pEnd, half: pHalf, forkLength: maxLen + 0.35 * dim.k, score };
       }
@@ -318,7 +326,7 @@ function perpDesignMonthFinger(D, M, dim, plateRadius, avoid) {
   }
   if (!best) return null;
 
-  const pS = 31.05 + (0.92 - best.span) / 2;
+  const pS = dim.date.teeth + 0.05 + (0.92 - best.span) / 2;
   const zeta = best.psiC - (pS - 1) * pitchD;
   const tipAt = (p) => perpPolar(D, best.rF, zeta + (p - 1) * pitchD);
   const raw = (p) => (best.sense * perpAngleDiff(perpAngleTo(M, tipAt(p)), best.tauStart)) / star.pitch;
@@ -370,7 +378,7 @@ function perpDesignMonthFinger(D, M, dim, plateRadius, avoid) {
 function perpLeverPawl(P, target, dim, lever, spec, cache) {
   const { center: C, star } = target;
   const d = perpDist(P, C);
-  const restMax = 31 + spec.restOffset;
+  const restMax = spec.N + spec.restOffset;
   const cE = spec.topP - 0.1;
   let best = null;
   // bec en deca du centre de l'etoile, ou au-dela (le bras passe alors
@@ -439,14 +447,17 @@ function perpLeverPawl(P, target, dim, lever, spec, cache) {
  * il le contourne (voir perpArmPoints, perpetual-render.js). Seules ses
  * extremites comptent pour la cinematique.
  */
-function perpDesignGrandLever(D, G, H, dim, plateRadius, obstacles, pivots, spec = PERP_KIND_SPECS.pendule, pawlTargets = null) {
+function perpDesignGrandLever(D, G, H, dim, plateRadius, obstacles, pivots, spec = perpSpec("pendule", perpCalendar()), pawlTargets = null) {
   const k = dim.k;
   const rF = dim.date.pin;
   const pitchD = dim.date.pitch;
-  const RG = perpTipRadius(dim.program);
+  const RG = perpProgramRadius(dim);
   const RH = perpTipRadius(dim.wheel24);
   const samples = Array.from({ length: 12 }, (_, i) => spec.lowP + ((spec.topP - spec.lowP) * i) / 11);
-  const restPs = [28, 29, 30, 31].map((L) => L + spec.restOffset);
+  const restPs = spec.lengths.map((L) => L + spec.restOffset);
+  const nLevels = restPs.length;
+  // came de 12 mois : le satellite remplit le cran du mois qu'il lit
+  const satLengths = spec.satelliteLengths;
   const pawlCache = new Map();
   const step = 0.4 * k;
   let best = null;
@@ -495,7 +506,7 @@ function perpDesignGrandLever(D, G, H, dim, plateRadius, obstacles, pivots, spec
         if (!ok || minEff < 0.5 || sigma === 0) continue;
 
         const pinAt = (p) => perpPolar(D, rF, zeta + (p - 1) * pitchD);
-        const thetaMid = perpAngleTo(P, pinAt(30));
+        const thetaMid = perpAngleTo(P, pinAt(spec.N - 1));
         const thetaOf = (p) => thetaMid + perpAngleDiff(perpAngleTo(P, pinAt(p)), thetaMid);
         if (Math.abs(thetaOf(spec.topP) - thetaOf(spec.lowP)) < 0.12) continue;
         const forkLength = maxLen + 0.35 * k;
@@ -512,10 +523,11 @@ function perpDesignGrandLever(D, G, H, dim, plateRadius, obstacles, pivots, spec
             const radius = (p) => perpDist(perpPolar(P, arm.length, thetaOf(p) + gamma), G);
             const levels = restPs.map(radius);
             const top = radius(spec.topP);
-            if (levels[0] < 0.6 * k || levels[3] > RG - 0.15 * k) continue;
+            if (levels[0] < 0.6 * k || levels[nLevels - 1] > RG - 0.15 * k) continue;
             let spaced = true;
-            for (let i = 1; i < 4; i++) if (levels[i] - levels[i - 1] < 0.07 * k) spaced = false;
-            if (!spaced || top <= levels[3]) continue;
+            for (let i = 1; i < nLevels; i++) if (levels[i] - levels[i - 1] < 0.07 * k) spaced = false;
+            if (!spaced || top <= levels[nLevels - 1]) continue;
+            if (satLengths && !perpSatelliteFits(radius(satLengths[0] + spec.restOffset), radius(satLengths[1] + spec.restOffset), dim)) continue;
             if (!bec || arm.length < bec.La) bec = { La: arm.length, gamma, radius };
           }
         }
@@ -589,14 +601,17 @@ function perpWheelCandidates(center, distance, radius, plateRadius, dim, obstacl
 
 /**
  * Point d'entree. `config` : { plateRadius, displays: { date, day, month },
- * kind: "pendule" | "montre" }
+ * kind: "pendule" | "montre", calendar: identifiant de perpCalendar }
  * (positions en mm). Retourne le modele complet, ou { ok: false, problems }.
  */
 function synthesizePerpetual(config) {
   const plateRadius = config.plateRadius;
   const kind = config.kind === "montre" ? "montre" : "pendule";
-  const spec = PERP_KIND_SPECS[kind];
-  const dim = perpDimensions(plateRadius, kind);
+  const cal = perpCalendar(config.calendar);
+  const spec = perpSpec(kind, cal);
+  const dim = perpDimensions(plateRadius, kind, cal);
+  // came de 12 mois : sur l'arbre de l'etoile des mois, pas de roue programme
+  const yearly = dim.program.positions === 12;
   const k = dim.k;
   const O = { x: 0, y: 0 };
   const D = config.displays.date;
@@ -623,11 +638,30 @@ function synthesizePerpetual(config) {
       if (gap < dim.clearance) problems.push(`${stars[i].label} et ${stars[j].label} se chevauchent : écarte les deux affichages.`);
     }
   }
+  const RG = perpProgramRadius(dim);
+  // la came de 12 mois deborde de l'etoile des mois : c'est elle qui compte
+  const monthR = yearly ? Math.max(dim.month.tip, RG) : dim.month.tip;
+  if (yearly && !problems.length) {
+    for (const [label, c, r] of [
+      ["la roue des heures", O, hourTip],
+      ["l'étoile de quantième", D, dim.date.tip],
+      ["l'étoile des jours", W, dim.day.tip],
+    ]) {
+      const gap = perpDist(M, c) - monthR - r;
+      if (gap < dim.clearance) {
+        problems.push(
+          `La came de 12 mois (${(2 * RG).toFixed(1).replace(".", ",")} mm de diamètre, sur l'arbre des mois) empiète sur ${label} : éloigne l'affichage des mois d'au moins ${(dim.clearance - gap)
+            .toFixed(2)
+            .replace(".", ",")} mm.`
+        );
+      }
+    }
+    if (!perpInPlate(M, RG, plateRadius, dim.plateMargin)) problems.push("La came de 12 mois sort de la platine : rapproche l'affichage des mois du centre.");
+  }
   if (problems.length) return { ok: false, problems, dim };
 
-  const starObstacles = [perpObstacle("D", D, dim.date.tip), perpObstacle("W", W, dim.day.tip), perpObstacle("M", M, dim.month.tip)];
+  const starObstacles = [perpObstacle("D", D, dim.date.tip), perpObstacle("W", W, dim.day.tip), perpObstacle("M", M, monthR)];
   const RH = perpTipRadius(dim.wheel24);
-  const RG = perpTipRadius(dim.program);
   const dOH = perpPitchRadius(dim.hourWheel) + perpPitchRadius(dim.wheel24);
   const dMG = perpPitchRadius(dim.program) + perpPitchRadius(dim.monthPinion);
 
@@ -649,14 +683,14 @@ function synthesizePerpetual(config) {
       perpObstacle("D", D, dim.date.tip),
       perpObstacle("W", W, dim.day.tip),
     ];
-    const gCandidates = perpWheelCandidates(M, dMG, RG, plateRadius, dim, gObstacles, 10).slice(0, 4);
+    const gCandidates = yearly ? [{ center: M }] : perpWheelCandidates(M, dMG, RG, plateRadius, dim, gObstacles, 10).slice(0, 4);
     if (!gCandidates.length) {
       fail("La roue programme (48 mois) ne trouve pas de place autour de l'étoile des mois : dégage les abords de l'affichage des mois.");
       continue;
     }
     for (const gc of gCandidates) {
       const G = gc.center;
-      const obstacles = [...gObstacles, perpObstacle("M", M, dim.month.tip), perpObstacle("G", G, RG)];
+      const obstacles = yearly ? [...gObstacles, perpObstacle("M", M, monthR)] : [...gObstacles, perpObstacle("M", M, dim.month.tip), perpObstacle("G", G, RG)];
       const pivots = [];
 
       let drives;
@@ -722,9 +756,13 @@ function synthesizePerpetual(config) {
         }
         pivots.push(monthLever.drive.B);
 
-        const grandLever = perpDesignGrandLever(D, G, H, dim, plateRadius, obstacles, pivots);
+        const grandLever = perpDesignGrandLever(D, G, H, dim, plateRadius, obstacles, pivots, spec);
         if (!grandLever) {
-          fail("Grand levier : aucun pivot ne relie à la fois la goupille de fin de mois, la came programme et le limaçon de 24 h. Regroupe davantage le quantième et les mois autour du centre.");
+          fail(
+            `Grand levier : aucun pivot ne relie à la fois la goupille de fin de mois, la came programme et le limaçon de 24 h${
+              yearly ? ", en laissant au satellite de la came la place de tourner" : ""
+            }. Regroupe davantage le quantième et les mois autour du centre.`
+          );
           continue;
         }
         pivots.push(grandLever.P);
@@ -758,7 +796,7 @@ function synthesizePerpetual(config) {
         continue;
       }
 
-      return assemblePerpetualModel({ kind, spec, plateRadius, dim, O, H, D, W, M, G, ...pieces, sautoirs });
+      return assemblePerpetualModel({ kind, cal, spec, plateRadius, dim, O, H, D, W, M, G, ...pieces, sautoirs });
     }
   }
   return { ok: false, dim, problems: [firstFailure ?? "Aucune disposition trouvée pour ces positions d'affichage."] };
@@ -776,8 +814,8 @@ function assemblePerpetualModel(parts) {
 
   const levels = {};
   const restByLength = {};
-  const spec = parts.spec;
-  for (const L of [28, 29, 30, 31]) {
+  const { spec, cal } = parts;
+  for (const L of spec.lengths) {
     levels[L] = round(grandLever.bec.radius(L + spec.restOffset));
     restByLength[L] = perpSolve(grandLever.bec.radius, levels[L], spec.lowP, spec.topP) ?? L + spec.restOffset;
   }
@@ -785,12 +823,25 @@ function assemblePerpetualModel(parts) {
   const snailLow = round(grandLever.lift.radius(spec.lowP));
   const topP = perpSolve(grandLever.lift.radius, snailTop, spec.lowP, spec.topP + 0.5) ?? spec.topP;
   const lowP = perpSolve(grandLever.lift.radius, snailLow, spec.lowP - 0.5, spec.topP) ?? spec.lowP;
-  const restP = Array.from({ length: PERP_PROGRAM_TEETH }, (_, kk) => restByLength[perpProgramLength(kk)]);
+  const restP = Array.from({ length: cal.cycleMonths }, (_, kk) => restByLength[perpCycleLength(cal, kk)]);
 
   const wheel24Phase = perpMeshPhase(O, dim.hourWheel.teeth, 0, H, dim.wheel24.teeth);
-  const programPhase = perpMeshPhase(M, dim.monthPinion.teeth, 0, G, dim.program.teeth);
+  const programPhase = dim.program.teeth ? perpMeshPhase(M, dim.monthPinion.teeth, 0, G, dim.program.teeth) : 0;
 
-  return {
+  // satellite de la came de 12 mois : un lobe par annee du cycle, au rayon
+  // du mois lu cette annee-la (les memes cotes usinees que les crans)
+  let satellite = null;
+  const satSpec = cal.program.satellite;
+  if (satSpec) {
+    const [shortL, longL] = spec.satelliteLengths;
+    const geo = perpSatelliteGeometry(levels[shortL], levels[longL], dim);
+    // centre au centieme lui aussi : chaque lobe tombe alors pile sur son cran
+    const rS = round(geo.rS);
+    const lobes = Array.from({ length: cal.cycleYears }, (_, cy) => round(levels[cal.monthLength(satSpec.readMonth, cy)] - rS));
+    satellite = { ...satSpec, rS, lobeMin: geo.lobeMin, inner: rS - Math.max(...lobes), lobes, hub: Math.min(...lobes) - 0.08 * dim.k };
+  }
+
+  const model = {
     ok: true,
     problems: [],
     ...parts,
@@ -798,7 +849,10 @@ function assemblePerpetualModel(parts) {
     monthSense: parts.monthFinger ? parts.monthFinger.sense : 1,
     centers: { O, H, D: parts.D, W: parts.W, M, G },
     phases: { hour: 0, wheel24: wheel24Phase, pinion: 0, program: programPhase },
+    satellite,
     thresholds: {
+      N: spec.N,
+      cycleMonths: cal.cycleMonths,
       levels,
       restByLength,
       restP,
@@ -810,4 +864,13 @@ function assemblePerpetualModel(parts) {
       monthWindow: [(parts.monthFinger ?? parts.monthLever).windowStart, (parts.monthFinger ?? parts.monthLever).windowEnd],
     },
   };
+  if (satellite) {
+    // le satellite se cale sur le rayon ou le bec se pose au mois lu
+    const becAt = (L) => perpPolar(grandLever.P, grandLever.bec.La, grandLever.thetaOf(restByLength[L]) + grandLever.bec.gamma);
+    const [shortL, longL] = spec.satelliteLengths;
+    const a1 = perpAngleTo(M, becAt(shortL));
+    const becAngle = a1 + perpAngleDiff(perpAngleTo(M, becAt(longL)), a1) / 2;
+    Object.assign(satellite, perpSatelliteLayout(model, becAngle));
+  }
+  return model;
 }

@@ -29,6 +29,11 @@
  * Le mecanisme ignore les regles seculaires : il affiche un 29 fevrier en
  * 2100, 2200 et 2300. C'est le cas de tous les quantiemes perpetuels
  * mecaniques, et le programme le dit plutot que de le cacher.
+ *
+ * Trois PROGRAMMES sont proposes pour lire la longueur du mois (voir
+ * PERP_CALENDARS) : la came de 48 mois ci-dessus ; une came de 12 mois
+ * portant une croix bissextile satellite, a la maniere de Dubois Depraz ; et
+ * le calendrier hegirien, came de 12 mois portant une came de 30 ans.
  */
 
 const PERP_DATE_TEETH = 31;
@@ -79,19 +84,22 @@ const PERP_TIMING = {
  *   - repos du grand levier pour un mois de L jours : L + PERP_REST_OFFSET.
  *     Toute valeur dans ]L, L+1[ convient ; 0,35 laisse au bec un peu de
  *     garde au-dessus du cran quand la came tourne sous lui.
- *   - butee haute : un peu au-dela du 1 (32), le sautoir finit le saut.
+ *   - butee haute : un peu au-dela du 1 (N + 1, N dents a l'etoile), le
+ *     sautoir finit le saut.
  *   - point bas du limacon : sous tous les reposes, il ne touche le levier
  *     qu'a la nuit.
+ * Ces reperes sont donnes par rapport a N (31 en gregorien, 30 en hegirien)
+ * et au mois le plus court : voir perpSpec.
  */
 const PERP_REST_OFFSET = 0.35;
-const PERP_TOP_P = 32.3;
-const PERP_LOW_P = 27.8;
+const PERP_TOP_ABOVE = 1.3; // butee haute : N + 1,3
+const PERP_LOW_BELOW = 0.2; // point bas du limacon : mois le plus court - 0,2
 // Fenetre ou la goupille des mois pousse le levier des mois. Elle couvre
-// presque toute la dent qui mene du 31 au 1 : la goupille ne parcourt
-// qu'un arc de quelques dixiemes de millimetre, et c'est tout ce dont le
-// levier dispose pour faire avancer l'etoile des mois d'une dent entiere.
-const PERP_MONTH_WINDOW_START = 31.0;
-const PERP_MONTH_WINDOW_MAX = 31.97;
+// presque toute la dent qui mene du dernier jour au 1 : la goupille ne
+// parcourt qu'un arc de quelques dixiemes de millimetre, et c'est tout ce
+// dont le levier dispose pour faire avancer l'etoile des mois d'une dent.
+// Donnee en dents au-dela de N.
+const PERP_MONTH_WINDOW_MAX = 0.97;
 
 /**
  * Construction de MONTRE : une grande bascule unique fait tout le travail de
@@ -117,8 +125,8 @@ const PERP_MONTH_WINDOW_MAX = 31.97;
  * laisse 0,4 dent de garde d'un cote et 0,6 de l'autre.
  */
 const PERP_WATCH_REST_OFFSET = -0.6;
-const PERP_WATCH_LOW_P = 27.0;
-const PERP_WATCH_TOP_P = 32.3;
+const PERP_WATCH_LOW_BELOW = 1.0;
+const PERP_WATCH_TOP_ABOVE = 1.3;
 const PERP_WATCH_TIMING = {
   nightStart: 20.0,
   liftStart: 20.0, // le limacon commence a lever la grande bascule
@@ -129,18 +137,198 @@ const PERP_WATCH_TIMING = {
 
 /** Parametres propres a chaque construction. */
 const PERP_KIND_SPECS = {
-  pendule: { lowP: PERP_LOW_P, topP: PERP_TOP_P, restOffset: PERP_REST_OFFSET, timing: PERP_TIMING },
-  montre: { lowP: PERP_WATCH_LOW_P, topP: PERP_WATCH_TOP_P, restOffset: PERP_WATCH_REST_OFFSET, timing: PERP_WATCH_TIMING },
+  pendule: { lowBelow: PERP_LOW_BELOW, topAbove: PERP_TOP_ABOVE, restOffset: PERP_REST_OFFSET, timing: PERP_TIMING },
+  montre: { lowBelow: PERP_WATCH_LOW_BELOW, topAbove: PERP_WATCH_TOP_ABOVE, restOffset: PERP_WATCH_REST_OFFSET, timing: PERP_WATCH_TIMING },
 };
+
+/**
+ * Reperes d'une construction pour un calendrier, en dents de l'etoile de
+ * quantieme : N dents, mois de `lengths` jours. En gregorien (N = 31, mois
+ * de 28 a 31 jours) on retrouve les valeurs de toujours : limacon de 27,8 a
+ * 32,3 pour la pendule, de 27 a 32,3 pour la montre.
+ */
+function perpSpec(kind, cal) {
+  const base = PERP_KIND_SPECS[kind];
+  const N = cal.dateTeeth;
+  const sat = cal.program.satellite;
+  // longueurs que prend, selon l'annee, le mois lu par le satellite
+  const read = sat ? Array.from({ length: cal.cycleYears }, (_, cy) => cal.monthLength(sat.readMonth, cy)) : null;
+  return {
+    ...base,
+    N,
+    lengths: cal.lengths,
+    lowP: Math.min(...cal.lengths) - base.lowBelow,
+    topP: N + base.topAbove,
+    satelliteLengths: read ? [Math.min(...read), Math.max(...read)] : null,
+  };
+}
 
 /** Longueur du mois `month` (0..11) dans l'annee `cycleYear` du cycle (0 = bissextile). */
 function perpMonthLength(month, cycleYear) {
   return [31, cycleYear === 0 ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month];
 }
 
-/** Longueur du mois porte par la position `k` (0..47) de la came programme. */
-function perpProgramLength(k) {
-  return perpMonthLength(k % 12, Math.floor(k / 12));
+// ------------------------------------------------------------------
+// Calendriers et programmes
+// ------------------------------------------------------------------
+
+/**
+ * Calendrier hegirien ARITHMETIQUE (tabulaire) : douze mois lunaires,
+ * alternativement de 30 et 29 jours (Mouharram 30, Safar 29...), soit 354
+ * jours ; Dhou al-hijja prend un 30e jour les annees abondantes, onze fois
+ * par cycle de 30 ans. Le cycle compte exactement 10 631 jours et se repete
+ * sans exception : c'est la seule regle, et une came peut la porter en
+ * entier. Deux repartitions des annees abondantes circulent ; elles ne
+ * different que par la 15e ou la 16e annee du cycle.
+ *
+ * Le calendrier religieux, lui, suit l'observation du croissant (ou le
+ * calendrier Umm al-Qura, calcule) et s'ecarte de l'arithmetique d'un jour,
+ * parfois deux, selon les mois : aucune came ne peut le prevoir, le
+ * correcteur de quantieme est la pour cela.
+ */
+const PERP_HIJRI_LEAP_YEARS = {
+  16: [2, 5, 7, 10, 13, 16, 18, 21, 24, 26, 29],
+  15: [2, 5, 7, 10, 13, 15, 18, 21, 24, 26, 29],
+};
+// 1er Mouharram de l'an 1 : vendredi 16 juillet 622 julien, soit le 19
+// juillet 622 du calendrier gregorien proleptique qu'utilise Date.UTC
+const PERP_HIJRI_EPOCH = Math.round(Date.UTC(622, 6, 19) / 86400000);
+const PERP_HIJRI_CYCLE_DAYS = 30 * 354 + 11;
+
+const PERP_HIJRI_MONTH_LABELS = ["MOH", "SAF", "RAB I", "RAB II", "JOU I", "JOU II", "RAJ", "CHA", "RAM", "CHAW", "QIDA", "HIJ"];
+const PERP_HIJRI_MONTH_NAMES = [
+  "mouharram",
+  "safar",
+  "rabia al-awal",
+  "rabia at-thani",
+  "joumada al-oula",
+  "joumada at-thania",
+  "rajab",
+  "chaabane",
+  "ramadan",
+  "chawwal",
+  "dhou al-qi'da",
+  "dhou al-hijja",
+];
+
+function perpHijriMonthLength(month, cycleYear, leapYears) {
+  if (month === 11) return leapYears.includes(cycleYear + 1) ? 30 : 29;
+  return month % 2 === 0 ? 30 : 29;
+}
+
+/** Date hegirienne arithmetique du jour `n` (numero de jour UTC). */
+function perpHijriFromDayNumber(n, leapYears) {
+  const days = n - PERP_HIJRI_EPOCH;
+  const cycle = Math.floor(days / PERP_HIJRI_CYCLE_DAYS);
+  let rest = days - cycle * PERP_HIJRI_CYCLE_DAYS;
+  let cy = 0;
+  while (rest >= 354 + (leapYears.includes(cy + 1) ? 1 : 0)) {
+    rest -= 354 + (leapYears.includes(cy + 1) ? 1 : 0);
+    cy++;
+  }
+  let m = 0;
+  while (rest >= perpHijriMonthLength(m, cy, leapYears)) {
+    rest -= perpHijriMonthLength(m, cy, leapYears);
+    m++;
+  }
+  return { y: cycle * 30 + cy + 1, m, d: rest + 1, cycleYear: cy, weekday: perpCivilFromDayNumber(n).weekday };
+}
+
+/**
+ * Le calendrier que le mecanisme doit suivre, et la facon dont il lit la
+ * longueur du mois.
+ *   - dateTeeth : dents de l'etoile de quantieme (le plus long mois) ;
+ *   - lengths : longueurs de mois possibles, chacune un cran de came ;
+ *   - cycleYears : annees apres lesquelles le programme revient a son depart.
+ *     L'etat du mecanisme retient le mois k dans ce cycle (0..12.cycleYears-1) ;
+ *   - program.positions : crans de la came programme. 48 : la came fait un
+ *     tour en quatre ans, menee par le pignon des mois. 12 : elle est
+ *     solidaire de l'etoile des mois et fait un tour par an ; un SATELLITE
+ *     qu'elle porte donne alors la longueur du mois `readMonth` selon
+ *     l'annee. Un doigt fixe le fait avancer d'un cran par tour, au passage
+ *     au mois `stepMonth` -- six mois plus loin, pour qu'il ne bouge jamais
+ *     sous le bec.
+ */
+function perpGregorianCalendar(id, program) {
+  return {
+    id,
+    family: "gregorien",
+    dateTeeth: 31,
+    lengths: [28, 29, 30, 31],
+    cycleYears: 4,
+    cycleMonths: 48,
+    monthLabels: PERP_MONTH_LABELS,
+    monthNames: PERP_MONTH_NAMES,
+    program,
+    monthLength: perpMonthLength,
+    fromDayNumber(n) {
+      const c = perpCivilFromDayNumber(n);
+      return { ...c, cycleYear: ((c.y % 4) + 4) % 4 };
+    },
+    format(c) {
+      return perpFormatCivil(c);
+    },
+    cycleLabel(cy) {
+      return cy === 0 ? "année bissextile" : `${cy}${cy === 1 ? "re" : "e"} année après bissextile`;
+    },
+  };
+}
+
+function perpHijriCalendar(variant) {
+  const leapYears = PERP_HIJRI_LEAP_YEARS[variant] ?? PERP_HIJRI_LEAP_YEARS[16];
+  return {
+    id: `hegirien-${variant}`,
+    family: "hegirien",
+    variant,
+    leapYears,
+    dateTeeth: 30,
+    lengths: [29, 30],
+    cycleYears: 30,
+    cycleMonths: 360,
+    monthLabels: PERP_HIJRI_MONTH_LABELS,
+    monthNames: PERP_HIJRI_MONTH_NAMES,
+    program: { positions: 12, satellite: { positions: 30, readMonth: 11, stepMonth: 5 } },
+    monthLength: (month, cy) => perpHijriMonthLength(month, cy, leapYears),
+    fromDayNumber: (n) => perpHijriFromDayNumber(n, leapYears),
+    format(c) {
+      return `${PERP_DAY_NAMES[c.weekday]} ${c.d} ${PERP_HIJRI_MONTH_NAMES[c.m]} ${c.y} H.`;
+    },
+    cycleLabel(cy) {
+      return `${cy + 1}${cy === 0 ? "re" : "e"} année du cycle de 30 ans, ${leapYears.includes(cy + 1) ? "abondante (355 j)" : "commune (354 j)"}`;
+    },
+  };
+}
+
+/** Calendrier d'apres son identifiant (panneau) ; le gregorien a 48 mois par defaut. */
+function perpCalendar(id) {
+  if (id === "gregorien-12") return perpGregorianCalendar(id, { positions: 12, satellite: { positions: 4, readMonth: 1, stepMonth: 7 } });
+  if (id === "hegirien-15") return perpHijriCalendar(15);
+  if (id === "hegirien-16") return perpHijriCalendar(16);
+  return perpGregorianCalendar("gregorien-48", { positions: 48 });
+}
+
+/** Longueur du mois porte par la position `k` du cycle (0..cycleMonths-1). */
+function perpCycleLength(cal, k) {
+  return cal.monthLength(k % 12, Math.floor(k / 12));
+}
+
+/** Etat du mecanisme regle sur le jour `n` (numero de jour UTC). */
+function perpStateFromDay(cal, n) {
+  const c = cal.fromDayNumber(n);
+  return { p: c.d, w: c.weekday, k: 12 * c.cycleYear + c.m };
+}
+
+/**
+ * Position du satellite (came de 12 mois) quand le mecanisme est au mois k :
+ * l'annee dont il donnera le prochain mois `readMonth`. Il a change au
+ * dernier passage au mois `stepMonth`.
+ */
+function perpSatelliteIndex(cal, k) {
+  const sat = cal.program.satellite;
+  const year = Math.floor(k / 12);
+  const month = k % 12;
+  const index = year + (month >= sat.stepMonth ? 0 : -1) + (sat.stepMonth > sat.readMonth ? 1 : 0);
+  return ((index % cal.cycleYears) + cal.cycleYears) % cal.cycleYears;
 }
 
 // ------------------------------------------------------------------
@@ -180,13 +368,6 @@ function perpCivilFromDayNumber(n) {
 
 function perpFormatCivil(c) {
   return `${PERP_DAY_NAMES[c.weekday]} ${c.d} ${PERP_MONTH_NAMES[c.m]} ${c.y}`;
-}
-
-/** Etat du mecanisme regle sur une date civile. */
-function perpStateFromCivil(c) {
-  const n = perpDayNumber(c.y, c.m, c.d);
-  const weekday = perpCivilFromDayNumber(n).weekday;
-  return { p: c.d, w: weekday, k: 12 * (((c.y % 4) + 4) % 4) + c.m };
 }
 
 // ------------------------------------------------------------------
@@ -287,23 +468,30 @@ function perpSolve(f, target, lo, hi, iterations = 60) {
  * l'est aussi : menee directement par un doigt de la roue de quantieme, elle
  * doit tourner d'un douzieme de tour pendant que le quantieme n'avance que
  * d'une dent, ce qui demande un rayon petit devant celui du doigt.
+ *
+ * La came de 12 mois est solidaire de l'etoile des mois, a un autre etage :
+ * elle peut deborder de l'etoile. `program.camRadius` est son rayon
+ * exterieur ; son satellite se loge entre le cran qu'il remplit et l'arbre.
  */
-function perpDimensions(plateRadius, kind = "pendule") {
+function perpDimensions(plateRadius, kind = "pendule", cal = perpCalendar()) {
   const k = plateRadius / 15;
   const star = (teeth, tip, rootRatio) => {
     const root = tip * rootRatio;
     return { teeth, tip, root, engage: (tip + root) / 2, pitch: (2 * Math.PI) / teeth };
   };
+  const yearly = cal.program.positions === 12;
   return {
     k,
     // deux goupilles sur l'etoile de quantieme : celle de fin de mois (grand
     // levier) et celle des mois, un peu plus au bord pour allonger son arc
-    date: { ...star(PERP_DATE_TEETH, 2.6 * k, 0.86), pin: 1.75 * k, monthPin: 1.95 * k },
+    date: { ...star(cal.dateTeeth, 2.6 * k, 0.86), pin: 1.75 * k, monthPin: 1.95 * k },
     day: star(PERP_DAY_TEETH, (kind === "montre" ? 0.8 : 1.75) * k, 0.6),
     month: star(PERP_MONTH_TEETH, (kind === "montre" ? 1.0 : 1.95) * k, 0.72),
     hourWheel: { teeth: 30, module: 0.1 * k },
     wheel24: { teeth: 60, module: 0.1 * k },
-    program: { teeth: PERP_PROGRAM_TEETH, module: 0.1 * k },
+    program: yearly
+      ? { positions: 12, camRadius: 2.3 * k, satellite: cal.program.satellite }
+      : { positions: PERP_PROGRAM_TEETH, teeth: PERP_PROGRAM_TEETH, module: 0.1 * k },
     monthPinion: { teeth: 12, module: 0.1 * k },
     clearance: 0.2 * k,
     pivotClearance: 0.35 * k,
@@ -315,6 +503,30 @@ function perpDimensions(plateRadius, kind = "pendule") {
     // fabrication : les rayons de came sont arrondis au centieme de mm
     machining: 0.01,
   };
+}
+
+/** Rayon exterieur de la came programme : sa roue (48 mois) ou la came elle-meme (12 mois). */
+function perpProgramRadius(dim) {
+  return dim.program.camRadius ?? perpTipRadius(dim.program);
+}
+
+/**
+ * Satellite de la came de 12 mois. Son centre est sur le rayon du cran qu'il
+ * remplit, a `rS` de l'arbre ; chacun de ses lobes, tourne vers l'exterieur,
+ * arrete le bec au rayon du mois lu cette annee-la. `lo` et `hi` : rayons de
+ * came du mois lu le plus court et le plus long. Le lobe court garde une
+ * longueur utile ; le long, en tournant, ne doit pas atteindre l'arbre.
+ */
+function perpSatelliteGeometry(lo, hi, dim) {
+  const k = dim.k;
+  const lobeMin = 0.25 * k;
+  const rS = lo - lobeMin;
+  const inner = rS - (hi - rS);
+  return { rS, lobeMin, inner, ok: inner >= dim.arborClearance };
+}
+
+function perpSatelliteFits(lo, hi, dim) {
+  return perpSatelliteGeometry(lo, hi, dim).ok;
 }
 
 function perpPitchRadius(w) {
